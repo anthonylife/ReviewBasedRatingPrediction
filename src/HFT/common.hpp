@@ -7,6 +7,7 @@
 #include "string.h"
 #include <string>
 #include <iostream>
+#include <fstream>
 #include "omp.h"
 #include "map"
 #include "set"
@@ -160,10 +161,10 @@ public:
     }
 
     // Re-read the entire file, this time building structures from those words in the dictionary
-    igzstream in2;
+    std::ifstream in2;
     
     //*********************************Reading training data******************************************
-    printf("Reading training data!\n");
+    printf("\rReading training data!\n");
     in2.open(trdata_path.c_str());
     nRead = 0;
     while (std::getline(in2, line))
@@ -221,7 +222,7 @@ public:
     in2.close();
 
     //*********************************Reading validation data******************************************
-    printf("Reading validation data!\n");
+    printf("\rReading validation data!\n");
     in2.open(vadata_path.c_str());
     nRead = 0;
     while (std::getline(in2, line))
@@ -277,7 +278,7 @@ public:
         break;
     }
     in2.close();
-    
+
     //*********************************Reading test data******************************************
     printf("Reading test data!\n");
     in2.open(tedata_path.c_str());

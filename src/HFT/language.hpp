@@ -97,11 +97,11 @@ public:
       beta_beer[v->item] += v->value - *alpha;
     }
     for (int u = 0; u < nUsers; u++)
-      beta_user[u] /= trainVotesPerUser[u].size();
-      //beta_user[u] /= votesPerUser[u].size();
+      //beta_user[u] /= trainVotesPerUser[u].size();
+      beta_user[u] /= votesPerUser[u].size();
     for (int b = 0; b < nBeers; b++)
-      beta_beer[b] /= trainVotesPerBeer[b].size();
-      //beta_beer[b] /= votesPerBeer[b].size();
+      //beta_beer[b] /= trainVotesPerBeer[b].size();
+      beta_beer[b] /= votesPerBeer[b].size();
     validTestError(train, valid, test, testSte);
     printf("Error w/ offset and bias (train/valid/test) = %f/%f/%f (%f)\n", train, valid, test, testSte);
 
