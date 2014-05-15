@@ -25,7 +25,7 @@ bool wordCountCompare(std::pair<std::string, int> p1, std::pair<std::string, int
 }
 
 /// To sort votes by product ID
-bool voteCompare(vote* v1, vote* v2) {
+bool voteCompare(Vote* v1, Vote* v2) {
     return v1->item > v2->item;
 }
 
@@ -133,23 +133,23 @@ public:
     }
 
     ~Corpus() {
-        for (std::vector<vote*>::iterator it = TR_V->begin();
+        for (std::vector<Vote*>::iterator it = TR_V->begin();
                 it != TR_V->end(); it++)
             delete *it;
         delete TR_V;
-        for (std::vector<vote*>::iterator it = VA_V->begin();
+        for (std::vector<Vote*>::iterator it = VA_V->begin();
                 it != VA_V->end(); it++)
             delete *it;
         delete VA_V;
-        for (std::vector<vote*>::iterator it = TE_V->begin();
+        for (std::vector<Vote*>::iterator it = TE_V->begin();
                 it != TE_V->end(); it++)
             delete *it;
         delete TE_V;
     }
 
-    std::vector<vote*>* TR_V;     // storing training data
-    std::vector<vote*>* TE_V;     // storing testing data
-    std::vector<vote*>* VA_V;     // storing validation data
+    std::vector<Vote*>* TR_V;     // storing training data
+    std::vector<Vote*>* TE_V;     // storing testing data
+    std::vector<Vote*>* VA_V;     // storing validation data
 
     int n_users; // Number of users
     int n_items; // Number of items

@@ -25,13 +25,17 @@ class DSACTM{
     //******Model parameter needed to be specified by User*******//
     /// Method control variable                                  //
     int niters;                                                  //
+    double delta;           // convergence value                 //
                                                                  // 
-    // Online learning                                           //
-    int minibatch;                                               //
+    /// Online learning                                          //
     double lr;              // learning rate for online learning //
+    int minibatch;                                               //
+    // truncated gradient                                        //
+    double truncated_k;                                          //
+    double truncated_theta;                                      //
                                                                  //
     /// Hyper-parameter setting                                  //
-    int K;               // latant factor dimension              //
+    int K;                  // latant factor dimension           //
     double lambda_u;        // laplace hyper for user topic      //
     double lambda_i;        // laplace hyper for item topic      //
     double lambda_b;        // laplace hyper for backgroud topic //
@@ -53,6 +57,7 @@ class DSACTM{
     double * mu;                // total rating average          //
     double ** topic_words;      // word distribution of topics   //
     double * background_topic;  // backgroud topic distribution  //
+    double ** vb_word_topics;   // topic distribution of word    //
     ///////////////////////////////////////////////////////////////
 
     int NW;         // total number of parameters
@@ -81,7 +86,7 @@ class DSACTM{
 
 public:
     DSACTM(char* trdata_path, char* vadata_path, char* tedata_path,
-            char* model_path, int niters, int minibatch, double lr,
+            char* model_path, int niters, double delta, int minibatch, double lr,
             int K, double lambda_u, double lambda_i, double lambda_b,
             double psai_u, double psai_i, double sigma_u, double sigma_i,
             double sigma_a, int max_words, int tr_method, bool restart_tag){
@@ -90,6 +95,7 @@ public:
         this->tedata_path = tedata_path;
         this->model_path  = model_path;
         this->niters      = niters;
+        this->delta       = delta;
         this->minibatch   = minibatch;
         this->lr          = lr;
         this->K           = K;
@@ -104,6 +110,8 @@ public:
         this->max_words   = max_words;
         this->tr_method   = tr_method;
         this->restart_tag = restart_tag;
+        truncated_k       = 10;                 // [5, 30]
+        truncated_theta   = 0.1;
 
         printf("Loading data.\n");
         corp = new Corpus(trdata_path, vadata_path, tedata_path, max_words);
@@ -153,6 +161,7 @@ public:
             delete[] gamma_user;
             delete[] gamma_item;
             delete[] topic_words;
+            delete[] vb_word_topics;
             delete mu;
             delete b_user;
             delete b_item;
@@ -163,18 +172,25 @@ public:
         vector<Vote*>(train_votes).swap(train_votes);
         vali_votes.clear();
         vector<Vote*>(vali_votes).swap(vali_votes);
+        test_votes.clear();
         vector<Vote*>(test_votes).swap(test_votes);
-
+        ntraining.clear();
+        map<int, int>(ntraining_puser).swap(ntraining_puser);
+        ntraining_pitem.clear();
+        map<int, int>(ntraining_pitem).swap(ntraining_pitem);
+        best_vali_predictions.clear();
+        map<Vote*, double>(best_vali_predictions).swap(best_vali_predictions);
     }
 
     void modelParaInit() {
         // total number of paramters to be learned
-        NW = 1 + (n_users+n_items)*(K+1) + (n_users+n_items+1)*K + K*n_words;
+        NW = 1 + (n_users+n_items)*(K+1) + (n_users+n_items+1)*K + 2*K*n_words;
         W = new double[NW];
         memset(W, 0, sizeof(double)*NW);
 
         allocMemForPara(W, &mu, &b_user, &b_item, &theta_user, &theta_item,
-                &gamma_user, &gamma_item, &background_topic, &topic_words);
+                &gamma_user, &gamma_item, &background_topic, &topic_words,
+                &vb_word_topics);
 
         // set mu to the average
         /*for (vector<Vote*>::iterator it=train_votes.begin();
@@ -228,114 +244,331 @@ public:
     }
 
     void allocMemForPara(double* g,
-                         double** g_mu,
-                         double** g_b_user,
-                         double** g_b_item,
-                         double*** g_theta_user,
-                         double*** g_theta_item,
-                         double*** g_gamma_user,
-                         double*** g_gamma_item,
-                         double** g_background_topic,
-                         double*** g_topic_words) {
+                         double** gmu,
+                         double** gb_user,
+                         double** gb_item,
+                         double*** gtheta_user,
+                         double*** gtheta_item,
+                         double*** ggamma_user,
+                         double*** ggamma_item,
+                         double** gbackground_topic,
+                         double*** gtopic_words,
+                         double*** gword_topics) {
         int ind = 0;
         
-        *g_mu = g + ind;
+        *gmu = g + ind;
         ind++;
 
-        *g_b_user = g + ind;
+        *gb_user = g + ind;
         ind += n_users;
-        *g_b_item = g + ind;
+        *gb_item = g + ind;
         ind += n_items;
         
-        *g_theta_user = new double*[n_users];
+        *gtheta_user = new double*[n_users];
         for (int u = 0; u < n_users; u++) {
-            (*g_theta_user)[u] = g + ind;
+            (*gtheta_user)[u] = g + ind;
             ind += K;
         }
-        *g_theta_item = new double*[n_items];
+        *gtheta_item = new double*[n_items];
         for (int i=0; i < n_items; i++) {
-            (*g_theta_item)[i] = g + ind;
+            (*gtheta_item)[i] = g + ind;
             ind += K;
         }
-        *g_gamma_user = new double*[n_users];
+        *ggamma_user = new double*[n_users];
         for (int u = 0; u < n_users; u++) {
-            (*g_gamma_user)[u] = g + ind;
+            (*ggamma_user)[u] = g + ind;
             ind += K;
         }
-        *g_gamma_item = new double*[n_items];
+        *ggamma_item = new double*[n_items];
         for (int i=0; i < n_items; i++) {
-            (*g_gamma_item)[i] = g + ind;
+            (*ggamma_item)[i] = g + ind;
             ind += K;
         }
 
-        *g_background_topic = g + ind;
+        *gbackground_topic = g + ind;
         ind += K;
-        *g_topic_words = new double*[K];
+        *gtopic_words = new double*[K];
         for (int k=0; k < K; k++) {
-            (*g_topic_words)[k] = g + ind;
-            g += n_words;
+            (*gtopic_words)[k] = g + ind;
+            ind += n_words;
+        }
+        *gword_topics = new double*[n_words];
+        for (int i=0; i < n_words; i++) {
+            (*gword_topics)[i] = g + ind;
+            ind += K;
         }
     }
 
-    void freeMemForPara(double** g_mu,
-                        double** g_b_user,
-                        double** g_b_item,
-                        double*** g_theta_user,
-                        double*** g_theta_item,
-                        double*** g_gamma_user,
-                        double*** g_gamma_item,
-                        double** g_background_topic,
-                        double*** g_topic_words) {
-        delete *g_mu;
-        delete *g_b_user;
-        delete *g_b_item;
-        delete *g_background_topic;
-        delete[] (*g_theta_user);
-        delete[] (*g_theta_item);
-        delete[] (*g_gamma_user);
-        delete[] (*g_gamma_item);
-        delete[] (*g_topic_words);
+    void freeMemForPara(double** gmu,
+                        double** gb_user,
+                        double** gb_item,
+                        double*** gtheta_user,
+                        double*** gtheta_item,
+                        double*** ggamma_user,
+                        double*** ggamma_item,
+                        double** gbackground_topic,
+                        double*** gtopic_words,
+                        double*** gword_topics) {
+        delete *gmu;
+        delete *gb_user;
+        delete *gb_item;
+        delete *gbackground_topic;
+        delete[] (*gtheta_user);
+        delete[] (*gtheta_item);
+        delete[] (*ggamma_user);
+        delete[] (*ggamma_item);
+        delete[] (*gtopic_words);
+        delete[] (*gword_topics);
     }
 
     void train() {
         if (tr_method == 0) {
             // SGD
-            online_learning();
+            onlineLearning();
         } else if (tr_method == 1) {
             // minibatch SGD
-            minibatch_learning();
+            minibatchLearning();
         } else if (tr_method == 2) {
             // GD + VB
-            batch_learning();
+            batchLearning();
         } else if (tr_method == 3) {
             // Coordinate descent (ALS+VB)
-            coordinate_learning();
+            coordinateLearning();
+        } else if (tr_method == 4) {
+            // Gibbs stochastic EM algorithm (E-step:Gibbs sampling, M-step:SGD)
+            gibbsStochasticEm();
         } else {
             printf("Invalid choice of learning method!\n");
             exit(1);
         }
+        saveModel();
     }
 
-    void online_learning() {
+    void onlineLearning() {
         double train_rmse, valid_rmse, test_rmse;
         double train_perp, valid_perp, test_perp;
-    
-        for ()
+        double obj_new, obj_old, best_valid, cur_valid;
+        int * user_scan, * item_scan;
+        double * doc_topic;
+        double exp_sum;
+        int user, item, rating;
+        double *gbackground_topic, *ggamma_user, *ggamma_item;
+        double *gtheta_user, *gtheta_item;
+        map<double> ** gtopic_words;
+        double *tmp_val1, *tmp_val2;
+        double res;
+        int cur_iter, complete;
+        bool converged; 
+       
+        gbackground_topic = new double[K];
+        ggamma_user = new double[K];
+        ggamma_item = new double[K];
+        gtheta_user = new double[K];
+        gtheta_item = new double[K];
+        gtopic_words = new map<int, double>*[K];
+        for (int k=0; k<K; k++)
+            gtopic_words[k] = new map<int, double>();
+
+        user_scan = new int[n_users];
+        memset(user_scan, 0, sizeof(int)*n_users);
+        item_scan = new int[n_items];
+        memset(item_scan, 0, sizeof(int)*n_items);
+
+        printf("Start online learning...\n");
+        tmp_val1 = new double[K];
+        tmp_val2 = new double[K];
+        cur_iter = 0;
+        best_valid = 1e5;
+        doc_topic = new double[K];
+        converged = false;
+        while(!converged && cur_iter < niters) {
+            random_shuffle(train_votes.begin(), train_votes.end());
+            complete = 0;
+            for (vector<Vote*>::iterator it=train_votes.begin();
+                    it!=train_votes.end(); it++) {
+                //user =  (*it)->user;
+                //item = (*it)->item;
+                //rating = (*it)->rating;
+                res = prediction(*it) - (*it)->value;
+                memset(gbackground_topic, 0, sizeof(double)*K);
+                memset(ggamma_user, 0, sizeof(double)*K);
+                memset(ggamma_item, 0, sizeof(double)*K);
+                memset(gtheta_user, 0, sizeof(double)*K);
+                memset(gtheta_item, 0, sizeof(double)*K);
+                for (int k=0; k<K; k++){
+                    gtopic_words[k]->clear();
+                    map<int, double>(*gtopic_words[k]).swap(*gtopic_words[k]);
+                }
+
+                // Note: first should compute doc topic distribution 
+                calDocTopic(&doc_topic, exp_sum, *it);
+                
+                // compute variational doc word topic distribution para first
+                calVbPara(&vb_word_topics, doc_topic, topic_words);
+
+                /// Compute gradients
+                #pragma omp parallel for
+                for (int k=0; k<K; k++) {
+                    for (vector<int>::iterator it1=(*it)->begin();
+                            it1!=(*it)->end(); it1++)  {
+                        // compute gradient of background topic factor
+                        gbackground_topic[k] += vb_word_topics[*it1][k]
+                                         * (1-exp(background_topic[k])/exp_sum);
+                        // compute gradient of user topic factor
+                        ggamma_user[k] += vb_word_topics[*it1][k]
+                                        * (1-exp(gamma_user[k])/exp_sum);
+                        // compute gradient of item topic factor
+                        ggamma_item[k] += vb_word_topics[*it1][k]
+                                        * (1-exp(gamma_item[k])/exp_sum);
+                        // compute gradient of dictionary bases
+                        if(gtopic_words[k]->find(*it1)==gtopic_words[k]->end())
+                            (*gtopic_words[k])[*it1] = vb_word_topics[*it1][k]
+                                                     / topic_words[k][*it1];
+                        else
+                            (*gtopic_words[k])[*it1] += vb_word_topics[*it1][k]
+                                                      / topic_words[k][*it1];
+                    }
+                    tmp_val1[k] = psai_u*(gamma_user[k]-theta_user[k]);
+                    tmp_val2[k] = psai_i*(gamma_item[k]-theta_item[k]);
+                    ggamma_user[k] -= tmp_val1[k];
+                    ggamma_item[k] -= tmp_val2[k];
+                    // compute gradient of user latent factor
+                    gtheta_user[k] = -theta_item[k]*res + tmp_val1[k];
+                    // compute gradient of item latent factor
+                    gtheta_item[k] = -theta_user[k]*res + tmp_val2[k];
+                }
+                
+                /// Update parameters
+                #pragma omp parallel for
+                for (int k=0; k<K; k++) {
+                    // update background topic factor
+                    background_topic[k] += lr*gbackground_topic[k];
+                    // update user topic factor
+                    gamma_user[(*it)->user][k] += lr*ggamma_user[k];
+                    // update item topic factor
+                    gamma_item[(*it)->item][k] += lr*ggamma_item[k];
+                    // update dictionary base
+                    for (map<int, double>::iterator it1=gtopic_words[k]->begin();
+                            it1!=gtopic_words[k]->end(); it1++)
+                        topic_words[k][it1->first] += lr*it1->second;
+                    // project dictionary codes to probabilistic simplex
+                    utils::project_beta(topic_words[k], n_words, 1, 1e-30);
+                    //utils::project_beta1(topic_words[k], n_words);
+                    
+                    // update user latent factor
+                    theta_user[(*it)->user][k] += lr*gtheta_user[k];
+                    // update item latent factor
+                    theta_item[(*it)->item][k] += lr*gtheta_item[k]; 
+                }
+                // compute user bias gradient and update 
+                b_user[(*it)->user] += lr*(-res-sigma_u);
+                // compute item bias gradient and update 
+                b_item[(*it)->item] += lr*(-res-sigma_i);
+                // compute gradient of average para and update
+                mu += lr*(-rse-sigma_a);
+
+                complete++;
+                if (complete % truncated_k == 0)
+                    truncatedGradient(&background_topic, lambda_b);
+                if (user_scan[user] % truncated_k == 0)
+                    truncatedGradient(&gamma_user[user], lambda_u);
+                if (item_scan[item] % truncated_k == 0)
+                    truncatedGradient(&gamma_item[item], lambda_i);
+            }
+
+            evalRmseError(train_rmse, valid_rmse, test_rmse);
+            printf("Current iteration: %d, Train RMSE=%.6f, Valid RMSE=%.6f,
+                    Test RMSE=%.6f!\n", train_rmse, valid_rmse, test_rmse);
+            
+            cur_valid = valid_rmse;
+            if (cur_valid < best_valid) {
+                best_valid = cur_valid;
+                for (vector<Vote*>::iterator it=train_votes.begin();
+                        it!=train_votes.end(); it++)
+                    best_vali_predictions[*it] = prediction(*it);
+                for (vector<Vote*>::iterator it=vali_votes.begin();
+                        it!=vali_votes.end(); it++)
+                    best_vali_predictions[*it] = prediction(*it);
+                for (vector<Vote*>::iterator it=test_votes.begin();
+                        it!=test_votes.end(); it++)
+                    best_vali_predictions[*it] = prediction(*it);
+            }
+            
+            if (cur_iter == 0)
+                obj_old = train_rmse;
+            else {
+                obj_new = train_rmse;
+                if (obj_new >= obj_old || fabs(obj_new-obj_old) < delta)
+                    converged = true;
+                obj_old = obj_new;
+            }
+            cur_iter += 1;
+        }
+        
+        // release memory
+        for (int k=0; k<K; k++) {
+            gtopic_words[k]->clear();
+            map<int, double>(*gtopic_words[k]).swap(*gtopic_words[k]);
+        }
+        delete[] gtopic_words;
+        
+        delete user_scan;
+        delete item_scan;
+        delete doc_topic;
+        delete gbackground_topic; 
+        delete ggamma_user;
+        delete ggamma_item;
+        delete gtheta_user;
+        delete gtheta_item;
+        delete tmp_val1;
+        delete tmp_val2;
     }
     
-    void minibatch_learning() {
+    void minibatchLearning() {
         double train_rmse, valid_rmse, test_rmse;
         double train_perp, valid_perp, test_perp;
     }
     
-    void batch_learning() {
+    void batchLearning() {
         double train_rmse, valid_rmse, test_rmse;
         double train_perp, valid_perp, test_perp;
     }
     
-    void coordinate_learning() {
+    void coordinateLearning() {
         double train_rmse, valid_rmse, test_rmse;
         double train_perp, valid_perp, test_perp;
+    }
+    
+    void gibbsStochasticEm() {
+        double train_rmse, valid_rmse, test_rmse;
+        double train_perp, valid_perp, test_perp;
+    }
+
+    void calDocTopic(double ** doc_topic, double& exp_sum, Vote * v) {
+        exp_sum = 0.0;
+        for (int i=0; i<K; i++) {
+            (*doc_topic)[i] = exp(background_topic[i]+gamma_user[v->user][i]
+                    +gamma_item[v->item][i]);
+            exp_sum += (*doc_topic)[i];
+        }
+        for (int i=0; i<K; i++)
+            (*doc_topic)[i] /= exp_sum;
+    }
+
+    void calVbPara(double ** vb_word_topics, double * doc_topic, 
+            double ** dtopic_words) {
+        for (int i=0; i<n_words; i++)
+            for (int j=0; j<K; j++)
+                (*vb_word_topics)[i][j] = doc_topic[j]*dtopic_words[j][i];
+    }
+
+    void truncatedGradient(double ** weights, double g) {
+        for (int i=0; i<K; i++) {
+            if ((*weights)[i] <= truncated_theta && (*weights)[i] >= 0)
+                (*weights)[i] = utils::max(0, (*weights[i])-lr*truncated_k*g);
+            if ((*weights)[i] >= -truncated_theta && (*weights)[i] <= 0)
+                (*weights)[i] = utils::min(0, (*weights[i])+lr*truncated_k*g);
+        }
     }
 
     inline double prediction(Vote * v) {
@@ -345,7 +578,6 @@ public:
 
     void evalRmseError(double& train, double& valid, double& test) {
         train = 0.0, valid = 0.0, test = 0.0;
-
         for (vector<Vote*>::iterator it = train_votes.begin();
                 it != train_votes.end(); it++)
             train += utils::square(prediction(*it) - (*it)->value) ;
@@ -360,51 +592,78 @@ public:
         test = sqrt(test, test_votes.size());
     } 
 
-    double evalPerplexity(double& train, double& valid, double& test){
+    double evalPerplexity(double& train, double& valid, double& test) {
     
     }
 
+    void submitPredictions(char* submission_path) {
+        FILE* f = fopen_(predictionPath, "w");
+        for (vector<Vote*>::iterator it = corp->TE_V->begin();
+                it != corp->TE_V->end(); it ++)
+            fprintf(f, "%s %s %.6f\n", corp->ruser_ids[(*it)->user].c_str(),
+                    corp->ritem_ids[(*it)->item].c_str(),
+                    best_vali_predictions[*it]);
+        fclose(f);
+    }
+
     void saveModel() {
-        FILE* f = utils::fopen_(user_factor_path, "w");
+        FILE* f = utils::fopen_(model_path, "w");
         for (int u=0; u<n_users; u++)
-            fwrite(user_factor[u], sizeof(double), ndim, f);
+            fwrite(W, sizeof(double), NW, f);
         fclose(f);
     }
 
     void loadModel() {
-        int num_para=0;
-        if (bias_tag)
-            num_para = (n_users+n_pois)*ndim+n_pois;
-        else
-            num_para = (n_users+n_pois)*ndim;
+        // total number of paramters to be learned
+        NW = 1 + (n_users+n_items)*(K+1) + (n_users+n_items+1)*K + 2*K*n_words;
+        W = new double[NW];
         
-        double * factor = new double[num_para];
         int ind = 0;
-        for (int u=0; u<n_users; u++) {
-            user_factor[u] = factor+ind;
-            ind += ndim;
+        
+        mu = g + ind;
+        ind++;
+
+        b_user = g + ind;
+        ind += n_users;
+        b_item = g + ind;
+        ind += n_items;
+        
+        theta_user = new double*[n_users];
+        for (int u = 0; u < n_users; u++) {
+            gtheta_user[u] = g + ind;
+            ind += K;
         }
-        for (int p=0; p<n_pois; p++) {
-            poi_factor[p] = factor+ind;
-            ind += ndim;
+        theta_item = new double*[n_items];
+        for (int i=0; i < n_items; i++) {
+            gtheta_item[i] = g + ind;
+            ind += K;
         }
-        if (bias_tag) {
-            poi_bias = factor+ind;
-            ind += n_pois;
+        gamma_user = new double*[n_users];
+        for (int u = 0; u < n_users; u++) {
+            gamma_user[u] = g + ind;
+            ind += K;
+        }
+        gamma_item = new double*[n_items];
+        for (int i=0; i < n_items; i++) {
+            gamma_item[i] = g + ind;
+            ind += K;
+        }
+
+        background_topic = g + ind;
+        ind += K;
+        topic_words = new double*[K];
+        for (int k=0; k < K; k++) {
+            topic_words[k] = g + ind;
+            ind += n_words;
+        }
+        word_topics = new double*[n_words];
+        for (int i=0; i < n_words; i++) {
+            word_topics[i] = g + ind;
+            ind += K;
         }
         
         FILE* f = utils::fopen_(user_factor_path, "r");
-        for (int u=0; u<n_users; u++)
-            utils::fread_(user_factor[u], sizeof(double), ndim, f);
+        utils::fread_(W, sizeof(double), NW, f);
         fclose(f);
-        f = utils::fopen_(poi_factor_path, "r");
-        for (int p=0; p<n_pois; p++)
-            utils::fread_(poi_factor[p], sizeof(double), ndim, f);
-        fclose(f);
-        if (bias_tag) {
-            f = utils::fopen_(poi_bias_path, "r");
-            utils::fread_(poi_bias, sizeof(double), n_pois, f);
-            fclose(f);
-        }
     }
 };

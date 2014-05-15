@@ -56,7 +56,7 @@ typedef struct vote Vote;
 
 namespace utils{
     // Task-specific functions. (e.g. loading reviews )
-    std::vector<Vote*> loadReviewData(char* data_path,
+    std::vector<Vote*>* loadReviewData(char* data_path,
                     std::map<std::string, int>* word_ids,
                     std::map<std::string, int>* user_ids,
                     std::map<int, std::string>* ruser_ids,
@@ -108,9 +108,9 @@ namespace utils{
         return 2 * x;
     }
 
-    void project_beta( double *beta, const int &nTerms, 
-							const double &dZ, const double &epsilon ); 
-    void project_beta1( double *beta, const int &nTerms );
+    void project_beta(double *beta, const int &nTerms, 
+							const double &dZ, const double &epsilon); 
+    void project_beta1(double *beta, const int &nTerms);
 
 
     // random number generator
@@ -152,13 +152,13 @@ namespace utils{
 
 
 //================Specific Functions=================
-std::vector<Vote*> utils::loadReviewData(char* data_path,
-                    std::map<std::string, int>* word_ids,
-                    std::map<std::string, int>* user_ids,
-                    std::map<int, std::string>* ruser_ids,
-                    std::map<std::string, int>* item_ids,
-                    std::map<int, std::string>* ritem_ids,
-                    int& n_users, int& n_items) {
+std::vector<Vote*>* utils::loadReviewData(char* data_path,
+                     std::map<std::string, int>* word_ids,
+                     std::map<std::string, int>* user_ids,
+                     std::map<int, std::string>* ruser_ids,
+                     std::map<std::string, int>* item_ids,
+                     std::map<int, std::string>* ritem_ids,
+                     int& n_users, int& n_items) {
     std::string u_name;
     std::string i_name;
     float value;
@@ -166,24 +166,24 @@ std::vector<Vote*> utils::loadReviewData(char* data_path,
     int nw;
     int n_read = 0;
     std::string line, s_word;
-    V = new std::vector<Vote*>();
+    vector<Vote*>* V = new std::vector<Vote*>();
     
     printf("Loading reveiw data into memory!\n");
     Vote* v = new Vote();
-    ifstream* in = utils::ifstream_(data_path);
+    std::ifstream* in = utils::ifstream_(data_path);
     while (std::getline(*in, line)) {
         std::stringstream ss(line);
         ss >> u_name >> i_name >> value >> vote_time >> nw;
         for (int w = 0; w < nw; w++) {
             ss >> s_word;
-            if (word_ids->find(sWord) != word_ids.end())
-                v->words.push_back((*word_ids)[s_ord]);
+            if (word_ids->find(s_word) != word_ids->end())
+                v->words.push_back((*word_ids)[s_word]);
         }
         if (user_ids->find(u_name) == user_ids->end()) {
             (*ruser_ids)[n_users] = u_name;
             (*user_ids)[u_name] = n_users++;
         }
-        v->user = user_ids[u_name];
+        v->user = (*user_ids)[u_name];
         if (item_ids->find(i_name) == item_ids->end()) {
             (*ritem_ids)[n_items] = i_name;
             (*item_ids)[i_name] = n_items++;
@@ -200,7 +200,7 @@ std::vector<Vote*> utils::loadReviewData(char* data_path,
             fflush( stdout);
         }
     }
-    in.close();
+    in->close();
     return V;
 }
 

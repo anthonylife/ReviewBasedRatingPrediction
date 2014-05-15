@@ -515,7 +515,8 @@ void topicCorpus::save(char* modelPath, char* predictionPath)
     for (set<vote*>::iterator it = testVotes.begin(); it != testVotes.end(); it++)
       fprintf(f, "%s %s %f %f\n", corp->rUserIds[(*it)->user].c_str(), corp->rBeerIds[(*it)->item].c_str(),
               (*it)->value, bestValidPredictions[*it]);*/
-    for (set<vote*>::iterator it = testVotes.begin(); it != testVotes.end(); it++)
+    //for (set<vote*>::iterator it = testVotes.begin(); it != testVotes.end(); it++)
+    for (std::vector<vote*>::iterator it = corp->TE_V->begin(); it != corp->TE_V->end(); it ++)
       fprintf(f, "%s %s %.6f\n", corp->rUserIds[(*it)->user].c_str(), corp->rBeerIds[(*it)->item].c_str(),
               bestValidPredictions[*it]);
     fclose(f);
@@ -584,19 +585,21 @@ int main(int argc, char** argv)
 {
   int i=0;
   srand(0);
-
-  double latentReg = 0.1;
-  double lambda = 0.1;
-  int K = 40;
-  int em_iters = 50;
-  int grad_iters = 50;
-  char* modelPath = "model.out";
-  string trdata_path;
-  string vadata_path;
-  string tedata_path;
-  char* submission_path = NULL;
-  int data_num = -1;
-  bool restart_tag = true;
+  
+  /////////////////////////////////////
+  double latentReg = 0.1;            //
+  double lambda = 0.1;               //
+  int K = 40;                        //
+  int em_iters = 50;                 //
+  int grad_iters = 50;               //
+  char* modelPath = "model.out";     //
+  string trdata_path;                //
+  string vadata_path;                //
+  string tedata_path;                //
+  char* submission_path = NULL;      //
+  int data_num = -1;                 //
+  bool restart_tag = true;           //
+  /////////////////////////////////////
 
   if (argc == 1) {
     printf("HFT by McAuley\n");
