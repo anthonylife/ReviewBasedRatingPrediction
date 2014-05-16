@@ -55,7 +55,7 @@ typedef struct vote Vote;
 
 
 namespace utils{
-    // Task-specific functions. (e.g. loading reviews )
+    /// Task-specific functions. (e.g. loading reviews )
     std::vector<Vote*>* loadReviewData(char* data_path,
                     std::map<std::string, int>* word_ids,
                     std::map<std::string, int>* user_ids,
@@ -65,7 +65,7 @@ namespace utils{
                     int& n_users, int& n_items);
 
     
-    // basic data io
+    /// basic data io
     FILE * fopen_(const char* p, const char* m);
     void fread_(double * M, size_t size, size_t count, FILE* stream);
     std::ifstream* ifstream_(const char* p);
@@ -74,12 +74,12 @@ namespace utils{
     void write_submission(std::vector<std::vector<std::string> >* recommendation_result, char* submission_path);
    
 
-    // time measurement
+    /// time measurement
     void tic(timeval &start_t);
     void toc(timeval &start_t, timeval &end_t);
 
 
-    // mathematical functions
+    /// mathematical functions
     inline double logitLoss(double x) {
         return (1-1.0/(1+exp(-x)));
     };
@@ -107,13 +107,15 @@ namespace utils{
     inline double gsquare(double x) {
         return 2 * x;
     }
-
+    
+    int matrixInversion(double **a, int n);
+    
     void project_beta(double *beta, const int &nTerms, 
 							const double &dZ, const double &epsilon); 
     void project_beta1(double *beta, const int &nTerms);
 
 
-    // random number generator
+    /// random number generator
     double gaussrand(double ep, double var);
     void muldimGaussrand(double ** factor, int ndim);
     void muldimUniform(double ** factor, int ndim);
@@ -168,7 +170,6 @@ std::vector<Vote*>* utils::loadReviewData(char* data_path,
     std::string line, s_word;
     vector<Vote*>* V = new std::vector<Vote*>();
     
-    printf("Loading reveiw data into memory!\n");
     Vote* v = new Vote();
     std::ifstream* in = utils::ifstream_(data_path);
     while (std::getline(*in, line)) {
@@ -200,12 +201,87 @@ std::vector<Vote*>* utils::loadReviewData(char* data_path,
             fflush( stdout);
         }
     }
+    printf("\r");
     in->close();
     return V;
 }
 
 
 //================Basic Functions===============
+int utils::matrixInversion(double **a, int n) {
+    int *is = new int[n];  
+    int *js = new int[n];  
+    int i,j,k;  
+    double d,p;  
+    for ( k = 0; k < n; k++)  
+    {  
+        d = 0.0;  
+        for (i=k; i<=n-1; i++)  
+            for (j=k; j<=n-1; j++)  
+            {  
+                p=fabs(a[i][j]);  
+                if (p>d) { d=p; is[k]=i; js[k]=j;}  
+            }  
+            if ( 0.0 == d )  
+            {  
+                free(is); free(js); printf("err**not inv\n");  
+                return(0);  
+            }  
+            if (is[k]!=k)  
+                for (j=0; j<=n-1; j++)  
+                {  
+                    p=a[k][j];  
+                    a[k][j]=a[is[k]][j];  
+                    a[is[k]][j]=p;  
+                }  
+            if (js[k]!=k)  
+                for (i=0; i<=n-1; i++)  
+                {  
+                    p=a[i][k];  
+                    a[i][k]=a[i][js[k]];  
+                    a[i][js[k]]=p;  
+                }  
+            a[k][k] = 1.0/a[k][k];  
+            for (j=0; j<=n-1; j++)  
+                if (j!=k)  
+                {  
+                    a[k][j] *= a[k][k];  
+                }  
+            for (i=0; i<=n-1; i++)  
+                if (i!=k)  
+                    for (j=0; j<=n-1; j++)  
+                        if (j!=k)  
+                        {  
+                            a[i][j] -= a[i][k]*a[k][j];  
+                        }  
+            for (i=0; i<=n-1; i++)  
+                if (i!=k)  
+                {  
+                    a[i][k] = -a[i][k]*a[k][k];  
+                }  
+    }  
+    for ( k = n-1; k >= 0; k--)  
+    {  
+        if (js[k]!=k)  
+            for (j=0; j<=n-1; j++)  
+            {  
+                p = a[k][j];  
+                a[k][j] = a[js[k]][j];  
+                a[js[k]][j]=p;  
+            }  
+            if (is[k]!=k)  
+                for (i=0; i<=n-1; i++)  
+                {   
+                    p = a[i][k];  
+                    a[i][k]=a[i][is[k]];  
+                    a[i][is[k]] = p;  
+                }  
+    }  
+    free(is); free(js);  
+    return(1);  
+}
+
+
 void utils::project_beta( double *beta, const int &nTerms, 
 							const double &dZ, const double &epsilon ) {
     std::vector<int> U(nTerms);
@@ -215,7 +291,7 @@ void utils::project_beta( double *beta, const int &nTerms,
 		mu_[i] = beta[i] - epsilon;
 		U[i] = i + 1;
 	}
-	double dZVal = dZ - epsilon * nTerms; // make sure dZVal > 0
+	//double dZVal = dZ - epsilon * nTerms; // make sure dZVal > 0
 
 	/* project to a simplex. */
 	double s = 0;
