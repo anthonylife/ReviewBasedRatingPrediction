@@ -50,7 +50,7 @@ public:
         // Read the input file. The first time the file is read it is only to
         // compute word counts, in order to select the top "maxWords" words to
         // include in the dictionary
-        ifstream* in = utils::ifstream_(trdata_path);
+        std::ifstream* in = utils::ifstream_(trdata_path);
         std::string line, s_word;
         while (std::getline(*in, line)) {
             std::stringstream ss(line);
@@ -74,7 +74,7 @@ public:
                 u_counts[u_name] = 0;
             if (i_counts.find(b_name) == i_counts.end())
                 i_counts[b_name] = 0;
-            u_ounts[u_name]++;
+            u_counts[u_name]++;
             i_counts[b_name]++;
 
             n_read++;
@@ -83,10 +83,10 @@ public:
                 fflush(stdout);
             }
         }
-        in.close();
+        in->close();
 
         printf("\nBasic statisticals: nUsers = %d, nItems = %d, nRatings = %d\n",
-                (int) uCounts.size(), (int) bCounts.size(), nRead);
+                (int)u_counts.size(), (int)i_counts.size(), n_read);
 
         // Sorting words according to their frequency, the save only top 
         //   "max_words", specified by user
@@ -111,25 +111,25 @@ public:
                                      &user_ids,
                                      &ruser_ids,
                                      &item_ids,
-                                     &ritem_ids
-                                     &n_users,
-                                     &n_items);
+                                     &ritem_ids,
+                                     n_users,
+                                     n_items);
         VA_V = utils::loadReviewData(vadata_path,
                                      &word_ids,
                                      &user_ids,
                                      &ruser_ids,
                                      &item_ids,
                                      &ritem_ids,
-                                     &n_users,
-                                     &n_items);
+                                     n_users,
+                                     n_items);
         TE_V = utils::loadReviewData(tedata_path,
                                      &word_ids,
                                      &user_ids,
                                      &ruser_ids,
                                      &item_ids,
                                      &ritem_ids,
-                                     &n_users,
-                                     &n_items);
+                                     n_users,
+                                     n_items);
     }
 
     ~Corpus() {

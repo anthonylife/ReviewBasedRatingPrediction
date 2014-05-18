@@ -26,6 +26,8 @@
 #include<sys/time.h>
 #include<omp.h>
 
+//#define SPEED_MATINV
+
 using namespace __gnu_cxx;
 namespace __gnu_cxx
 {
@@ -108,12 +110,15 @@ namespace utils{
         return 2 * x;
     }
     
-    int matrixInversion(double **a, int n);
+    void matrixInversion(double **A, int order, double **Y);
+    int getMinor(double **src, double **dest, int row, int col, int order);
+    double calcDeterminant( double **mat, int order);
     
     void project_beta(double *beta, const int &nTerms, 
 							const double &dZ, const double &epsilon); 
     void project_beta1(double *beta, const int &nTerms);
 
+    void project_beta2( double *beta, const int &n_terms);
 
     /// random number generator
     double gaussrand(double ep, double var);
@@ -208,78 +213,104 @@ std::vector<Vote*>* utils::loadReviewData(char* data_path,
 
 
 //================Basic Functions===============
-int utils::matrixInversion(double **a, int n) {
-    int *is = new int[n];  
-    int *js = new int[n];  
-    int i,j,k;  
-    double d,p;  
-    for ( k = 0; k < n; k++)  
-    {  
-        d = 0.0;  
-        for (i=k; i<=n-1; i++)  
-            for (j=k; j<=n-1; j++)  
-            {  
-                p=fabs(a[i][j]);  
-                if (p>d) { d=p; is[k]=i; js[k]=j;}  
-            }  
-            if ( 0.0 == d )  
-            {  
-                free(is); free(js); printf("err**not inv\n");  
-                return(0);  
-            }  
-            if (is[k]!=k)  
-                for (j=0; j<=n-1; j++)  
-                {  
-                    p=a[k][j];  
-                    a[k][j]=a[is[k]][j];  
-                    a[is[k]][j]=p;  
-                }  
-            if (js[k]!=k)  
-                for (i=0; i<=n-1; i++)  
-                {  
-                    p=a[i][k];  
-                    a[i][k]=a[i][js[k]];  
-                    a[i][js[k]]=p;  
-                }  
-            a[k][k] = 1.0/a[k][k];  
-            for (j=0; j<=n-1; j++)  
-                if (j!=k)  
-                {  
-                    a[k][j] *= a[k][k];  
-                }  
-            for (i=0; i<=n-1; i++)  
-                if (i!=k)  
-                    for (j=0; j<=n-1; j++)  
-                        if (j!=k)  
-                        {  
-                            a[i][j] -= a[i][k]*a[k][j];  
-                        }  
-            for (i=0; i<=n-1; i++)  
-                if (i!=k)  
-                {  
-                    a[i][k] = -a[i][k]*a[k][k];  
-                }  
-    }  
-    for ( k = n-1; k >= 0; k--)  
-    {  
-        if (js[k]!=k)  
-            for (j=0; j<=n-1; j++)  
-            {  
-                p = a[k][j];  
-                a[k][j] = a[js[k]][j];  
-                a[js[k]][j]=p;  
-            }  
-            if (is[k]!=k)  
-                for (i=0; i<=n-1; i++)  
-                {   
-                    p = a[i][k];  
-                    a[i][k]=a[i][is[k]];  
-                    a[i][is[k]] = p;  
-                }  
-    }  
-    free(is); free(js);  
-    return(1);  
+// matrix inversioon
+// the result is put in Y
+#ifdef SPEED_MATINV
+double *temp = new double[(40-1)*(40-1)];
+double **minor = new double*[40-1];
+#endif
+
+void utils::matrixInversion(double **A, int order, double **Y) {
+    // get the determinant of a
+    double det = 1.0/utils::calcDeterminant(A,order);
+
+    // memory allocation
+#ifndef SPEED_MATINV
+    double *temp = new double[(order-1)*(order-1)];
+    double **minor = new double*[order-1];
+#endif
+    for(int i=0;i<order-1;i++)
+        minor[i] = temp+(i*(order-1));
+
+    for(int j=0;j<order;j++)
+    {
+        for(int i=0;i<order;i++)
+        {
+            // get the co-factor (matrix) of A(j,i)
+            utils::getMinor(A,minor,j,i,order);
+            Y[i][j] = det*utils::calcDeterminant(minor,order-1);
+            if( (i+j)%2 == 1)
+                Y[i][j] = -Y[i][j];
+        }
+    }
+
+    // release memory
+    //delete [] minor[0];
+    delete [] temp;
+    delete [] minor;
 }
+
+// calculate the cofactor of element (row,col)
+int utils::getMinor(double **src, double **dest, int row, int col, int order) {
+    // indicate which col and row is being copied to dest
+    int colCount=0,rowCount=0;
+
+    for(int i = 0; i < order; i++ )
+    {
+        if( i != row )
+        {
+            colCount = 0;
+            for(int j = 0; j < order; j++ )
+            {
+                // when j is not the element
+                if( j != col )
+                {
+                    dest[rowCount][colCount] = src[i][j];
+                    colCount++;
+                }
+            }
+            rowCount++;
+        }
+    }
+
+    return 1;
+}
+
+// Calculate the determinant recursively.
+double utils::calcDeterminant( double **mat, int order) {
+    // order must be >= 0
+	// stop the recursion when matrix is a single element
+    if( order == 1 )
+        return mat[0][0];
+
+    // the determinant value
+    double det = 0;
+
+    // allocate the cofactor matrix
+    double **minor;
+    minor = new double*[order-1];
+    for(int i=0;i<order-1;i++)
+        minor[i] = new double[order-1];
+
+    for(int i = 0; i < order; i++ )
+    {
+        // get minor of element (0,i)
+        utils::getMinor( mat, minor, 0, i , order);
+        // the recusion is here!
+
+        det += (i%2==1?-1.0:1.0) * mat[0][i] * utils::calcDeterminant(minor,order-1);
+        //det += pow( -1.0, i ) * mat[0][i] * CalcDeterminant( minor,order-1 );
+    }
+
+    // release memory
+    for(int i=0;i<order-1;i++)
+        delete [] minor[i];
+    delete [] minor;
+
+    return det;
+}
+
+
 
 
 void utils::project_beta( double *beta, const int &nTerms, 
@@ -334,8 +365,7 @@ void utils::project_beta( double *beta, const int &nTerms,
 
 
 // project beta to simplex ( N*log(N) ). (ICML-09, efficient L1 ball)
-void utils::project_beta1( double *beta, const int &nTerms )
-{
+void utils::project_beta1( double *beta, const int &nTerms) {
 	double * mu_ = new double[nTerms];
 	// copy. (mu for temp use)
 	for ( int i=0; i<nTerms; i++ ) {
@@ -343,11 +373,8 @@ void utils::project_beta1( double *beta, const int &nTerms )
 	}
 	// sort m_mu.
 	quickSort(mu_, 0, nTerms-1, true);
-	for ( int i=0; i<nTerms; i++ ) {
-        std::cout << mu_[i] << " ";
-	}
-    utils::pause();
-	// find rho.
+	
+    // find rho.
 	int rho = 0;
 	double dsum = 0;
 	for ( int i=0; i<nTerms; i++ ) {
@@ -367,6 +394,15 @@ void utils::project_beta1( double *beta, const int &nTerms )
 		beta[i] = max(0.0, beta[i] - theta);
 	}
     delete mu_;
+}
+
+
+void utils::project_beta2( double *beta, const int &n_terms) {
+    double normalization = 0.0;
+    for (int i=0; i<n_terms; i++)
+        normalization += beta[i];
+    for (int i=0; i<n_terms; i++)
+        beta[i] /= normalization;
 }
 
 FILE * utils::fopen_(const char* p, const char* m) {
@@ -439,6 +475,8 @@ void utils::toc(timeval &start_t, timeval &end_t){
     gettimeofday(&end_t, 0);
     double timeuse = 1000000*(end_t.tv_sec-start_t.tv_sec)+end_t.tv_usec-start_t.tv_usec;
     printf("Time cost: %f(us)!\n", timeuse);
+    printf("Time cost: %f(us), %f(s), %f(min)!\n", timeuse,
+            timeuse/(1000*1000), timeuse/(1000*1000*60));
 }
 
 
