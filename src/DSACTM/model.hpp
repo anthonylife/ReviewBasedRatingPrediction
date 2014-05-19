@@ -22,7 +22,8 @@
 //#define OL_M_T
 //#define OL_S_T
 //#define OL_I_T
-#define OL_ALGORITHM_DEBUG
+#define OL_DEBUG
+#define CD_DEBUG
 
 using namespace std;
 using namespace __gnu_cxx;
@@ -205,7 +206,7 @@ public:
                 &vb_word_topics);
 
         // set mu to the average
-        /*for (vector<Vote*>::iterator it=train_votes.begin();
+        for (vector<Vote*>::iterator it=train_votes.begin();
                 it!=train_votes.end(); it++)
             *mu += (*it)->value;
         *mu /= train_votes.size();
@@ -217,14 +218,14 @@ public:
             b_item[(*it)->item] += (*it)->value - *mu;
         }
         for (int u=0; u<n_users; u++)
-            b_user[u] /= train_votes_puser[u];
+            b_user[u] /= train_votes_puser[u].size();
         for (int i=0; i<n_items; i++) 
-            b_item[i] /= train_votes_pitem[i];*/
+            b_item[i] /= train_votes_pitem[i].size();
         
         // randomly init user bias, item bias and average
-        utils::muldimPosUniform(mu, 1, 1.0);
+        /*utils::muldimPosUniform(mu, 1, 1.0);
         utils::muldimPosUniform(b_user, n_users, 1.0);
-        utils::muldimPosUniform(b_item, n_items, 1.0);
+        utils::muldimPosUniform(b_item, n_items, 1.0);*/
 
         // randomly init user and item latent factor and topic factor
         for (int u=0; u<n_users; u++) {
@@ -418,7 +419,7 @@ public:
                 utils::tic(start_t);
 #endif
                 res = prediction(*it) - (*it)->value;
-#ifdef OL_ALGORITHM_DEBUG
+#ifdef OL_DEBUG
                 cout << "Word cnt = " << (*it)->words.size() << endl;
                 cout << "res = " << res << endl;
                 cout << "value = " << (*it)->value << endl;
@@ -443,7 +444,7 @@ public:
                 utils::tic(start_t);
 #endif
                 calDocTopic(&doc_topic, exp_sum, *it);
-#ifdef OL_ALGORITHM_DEBUG
+#ifdef OL_DEBUG
                 cout << "exp_sum=" << exp_sum <<endl;
                 cout << "doc_topic=";
                 for (int i=0; i<K; i++)
@@ -463,7 +464,7 @@ public:
                 utils::tic(start_t);
 #endif
                 calVbPara(&vb_word_topics, doc_topic, topic_words, (*it)->words);
-#ifdef OL_ALGORITHM_DEBUG
+#ifdef OL_DEBUG
                 /*for (vector<int>::iterator it1=(*it)->words.begin();
                     it1!=(*it)->words.end(); it1++) {
                     cout << "VB word topic:";
@@ -517,7 +518,7 @@ public:
                     // compute gradient of item latent factor
                     gtheta_item[k] = -theta_user[user][k]*res + tmp_val2[k];
                 }
-#ifdef OL_ALGORITHM_DEBUG
+#ifdef OL_DEBUG
                 cout << "background_topic:";
                 for (int k=0; k<K; k++)
                     cout << gbackground_topic[k] << " ";
@@ -543,15 +544,15 @@ public:
                 #pragma omp parallel for
                 for (int k=0; k<K; k++) {
                     // update background topic factor
-                    background_topic[k] += lr*gbackground_topic[k];
+                    background_topic[k] += lr*alpha*gbackground_topic[k];
                     // update user topic factor
-                    gamma_user[user][k] += lr*ggamma_user[k];
+                    gamma_user[user][k] += lr*alpha*ggamma_user[k];
                     // update item topic factor
-                    gamma_item[item][k] += lr*ggamma_item[k];
+                    gamma_item[item][k] += lr*alpha*ggamma_item[k];
                     // update dictionary base
                     for (map<int, double>::iterator it1=gtopic_words[k]->begin();
                             it1!=gtopic_words[k]->end(); it1++)
-                        topic_words[k][it1->first] += lr*it1->second;
+                        topic_words[k][it1->first] += lr*alpha*it1->second;
                     //utils::project_beta(topic_words[k], n_words, 1, 1e-30);
                     //utils::project_beta1(topic_words[k], n_words);
                     //utils::project_beta2(topic_words[k], n_words);
@@ -566,11 +567,11 @@ public:
                 // compute item bias gradient and update 
                 b_item[item] += lr*(-res-sigma_i);
                 // compute gradient of average para and update
-#ifdef OL_ALGORITHM_DEBUG
+#ifdef OL_DEBUG
                 cout << "before mu=" << *mu <<endl;
 #endif
                 *mu += lr*(-res-sigma_a);
-#ifdef OL_ALGORITHM_DEBUG
+#ifdef OL_DEBUG
                 cout << "after mu=" << *mu <<endl;
                 utils::pause();
 #endif
@@ -960,7 +961,7 @@ public:
         bool converged;
 
         /// Allocate memory for caching intermidiate results
-        inter_tu1 = new double*[n_users]
+        inter_tu1 = new double*[n_users];
         inter_tu2 = new double*[n_users];
         for (int u=0; u<n_users; u++) {
             inter_tu1[u] = new double[K];
@@ -969,8 +970,8 @@ public:
         inter_ti1 = new double*[n_items];
         inter_ti2 = new double*[n_items];
         for (int i=0;i<n_items; i++) {
-            inter_ti1 = new double[K];
-            inter_ti2 = new double[K];
+            inter_ti1[i] = new double[K];
+            inter_ti2[i] = new double[K];
         }
         exp_gu = new double*[n_users];
         for (int u=0; u<n_users; u++) {
@@ -1013,14 +1014,14 @@ public:
 
         /// Allocate memory for storing gradients
         grad_gu = new double*[n_users];
-        for (int k=0; k<K; k++) {
-            grad_gu[k] = new double[K];
-            memset(grad_gu, 0.0, sizeof(double)*K);
+        for (int u=0; u<n_users; u++) {
+            grad_gu[u] = new double[K];
+            memset(grad_gu[u], 0.0, sizeof(double)*K);
         }
         grad_gi = new double*[n_items];
-        for (int k=0; k<K; k++) {
-            grad_gi = new double[K];
-            memset(grad_gi, 0.0, sizeof(double)*K);
+        for (int i=0; i<n_items; i++) {
+            grad_gi[i] = new double[K];
+            memset(grad_gi[i], 0.0, sizeof(double)*K);
         }
         grad_bt = new double[K];
         memset(grad_bt, 0.0, sizeof(double)*K);
@@ -1030,15 +1031,15 @@ public:
         t_k1 = new double[K];
         t_k_u =  new double*[n_users];
         t_k1_u = new double*[n_users];
-        for (u=0; u<n_users; u++) {
+        for (int u=0; u<n_users; u++) {
             t_k_u[u] = new double[K];
             t_k1_u[u] = new double[K];
         }
         t_k_i =  new double*[n_items];
         t_k1_i = new double*[n_items];
-        for (i=0; i<n_items; i++) {
-            t_k_i[i] = new double*[K];
-            t_k1_i[i] = new double*[K];
+        for (int i=0; i<n_items; i++) {
+            t_k_i[i] = new double[K];
+            t_k1_i[i] = new double[K];
         }
         xk_bt = new double[K];
         xk1_bt = new double[K];
@@ -1051,8 +1052,8 @@ public:
         xk_gi = new double*[n_items];
         xk1_gi = new double*[n_items];
         for (int i=0; i<n_items; i++) {
-            xk_gi = new double[K];
-            xk1_gi = new double[K]; 
+            xk_gi[i] = new double[K];
+            xk1_gi[i] = new double[K]; 
         }
         
         /// Allocate memory for dictionary learning
@@ -1065,9 +1066,13 @@ public:
             //exp_dict[k] = new double[K];
         }
 
-        printf("Start coordinate learning...\m");
+        timeval start_t, end_t;
+        printf("Start coordinate learning...\n");
         while(!converged && cur_iter < niters) {
-            
+#ifdef CD_DEBUG
+        cout<< "CD for learning user latent factor" <<endl;
+        utils::tic(start_t);
+#endif
             /// CD for learning user latent factor
             for (int u=0; u<n_users; u++) {
                 memset(inter_tu1[u], 0.0, sizeof(double)*K);
@@ -1078,10 +1083,10 @@ public:
                 for (vector<Vote*>::iterator it=train_votes_puser[u].begin();
                         it!=train_votes_puser[u].end(); it++) {
                     int item = (*it)->item;
-                    double res = prediction(*it) - (*it)->value;
+                    double res = (*it)->value - predictionWithoutFactorProd(*it);
                     for (int k=0; k<K; k++) {
                         inter_tu1[u][k] += theta_item[item][k]
-                                        * theta_item[item][k];
+                                         * theta_item[item][k];
                         inter_tu2[u][k] += theta_item[item][k]*res;
                     }
                 }
@@ -1089,18 +1094,33 @@ public:
                     theta_user[u][k]=(psai_u*gamma_user[u][k]+inter_tu2[u][k])
                                     /(psai_u+inter_tu1[u][k]);
             }
-            
+#ifdef CD_DEBUG
+            utils::toc(start_t, end_t);
+            utils::pause();
+#endif
+
             /// CD for learning user rating bias
+#ifdef CD_DEBUG
+            cout << "CD for learning user rating bias" << endl;
+            utils::tic(start_t);
+#endif
             #pragma omp parallel for
             for (int u=0; u<n_users; u++) {
                 double inter_b = 0.0;
                 for (vector<Vote*>::iterator it=train_votes_puser[u].begin();
                         it!=train_votes_puser[u].end(); it++)
-                    inter_b += predictionWithoutUserBias[*it];
+                    inter_b += (*it)->value - predictionWithoutUserBias(*it);
                 b_user[u] = inter_b/(train_votes_puser[u].size()+sigma_u);
             }
-            
+#ifdef CD_DEBUG
+            utils::toc(start_t, end_t);
+            utils::pause();
+#endif
             /// CD for learning item latent factor
+#ifdef CD_DEBUG
+            cout << "CD for learning item latent factor" << endl;
+            utils::tic(start_t);
+#endif
             for (int i=0;i<n_items; i++) {
                 memset(inter_ti1[i], 0.0, sizeof(double)*K);
                 memset(inter_ti2[i], 0.0, sizeof(double)*K);
@@ -1109,8 +1129,8 @@ public:
             for (int i=0; i<n_items; i++) {
                 for (vector<Vote*>::iterator it=train_votes_pitem[i].begin();
                         it!=train_votes_pitem[i].end(); it++) {
-                    double user = (*it)->user;
-                    double res = prediction(*it) - (*it)->value;
+                    int user = (*it)->user;
+                    double res = (*it)->value - predictionWithoutFactorProd(*it);
                     for (int k=0; k<K; k++) {
                         inter_ti1[i][k] += theta_user[user][k]
                                          * theta_user[user][k];
@@ -1121,25 +1141,49 @@ public:
                     theta_item[i][k]=(psai_i*gamma_item[i][k]+inter_ti2[i][k])
                                     /(psai_i+inter_ti1[i][k]);
             }
+#ifdef CD_DEBUG
+            utils::toc(start_t, end_t);
+            utils::pause();
+#endif
 
             /// CD for learning item rating bias
+#ifdef CD_DEBUG
+            cout << "CD for learning item rating bias" << endl;
+            utils::tic(start_t);
+#endif
             #pragma omp parallel for
             for (int i=0; i<n_items; i++) {
                 double inter_b = 0.0;
                 for (vector<Vote*>::iterator it=train_votes_pitem[i].begin();
                         it!=train_votes_pitem[i].end(); it++)
-                    inter_b += predictionWithoutItemBias[*it];
+                    inter_b += (*it)->value - predictionWithoutItemBias(*it);
                 b_item[i] = inter_b/(train_votes_pitem[i].size()+sigma_i);
             }
+#ifdef CD_DEBUG
+            utils::toc(start_t, end_t);
+            utils::pause();
+#endif
             
             /// CD for learning whole rating bias
+#ifdef CD_DEBUG
+            cout << "CD for learning whole rating bias" << endl;
+            utils::tic(start_t);
+#endif
             double inter_mu = 0.0;
             for (vector<Vote*>::iterator it=train_votes.begin();
                     it!=train_votes.end(); it++)
-                inter_mu += predictionWithoutAverage(*it);
+                inter_mu += (*it)->value - predictionWithoutAverage(*it);
             *mu = inter_mu/(train_votes.size()+sigma_a);
+#ifdef CD_DEBUG
+            utils::toc(start_t, end_t);
+            utils::pause();
+#endif
 
             /// CD for learning background topic factor (FISTA algorithm)
+#ifdef CD_DEBUG
+            cout << "CD for background topic factor" << endl;
+            utils::tic(start_t);
+#endif
             for (int k=0; k<K; k++)
                 t_k[k] = 1;
             memcpy(xk_bt, background_topic, sizeof(double)*K);
@@ -1183,9 +1227,21 @@ public:
                     xk_bt[k] = xk1_bt[k];
                     exp_bt[k] = exp(background_topic[k]);
                 }
+#ifdef CD_DEBUG
+                printf("\rCurrent iteration: %d...", t+1);
+                fflush(stdout);
+#endif
             }
+#ifdef CD_DEBUG
+            utils::toc(start_t, end_t);
+            utils::pause();
+#endif
             
             /// CD for learning user topic factor (FISTA algorithm)
+#ifdef CD_DEBUG
+            cout << "CD for user topic factor" << endl;
+            utils::tic(start_t);
+#endif
             for (int u=0; u<n_users; u++) {
                 for (int k=0; k<K; k++)
                     t_k_u[u][k] = 1;
@@ -1215,7 +1271,7 @@ public:
                             #pragma omp parallel for
                             for (int k=0; k<K; k++) 
                                 exp_doctopic_sum_u[u][k] += exp_wordtopic_u[u][k]
-                                                          / exp_wordtopic_sum[u];
+                                                          / exp_wordtopic_sum_u[u];
                         }
                         #pragma omp parallel for
                         for (int k=0; k<K; k++)
@@ -1236,10 +1292,22 @@ public:
                         xk_gu[u][k] = xk1_gu[u][k];
                         exp_gu[u][k] = exp(gamma_user[u][k]);
                     }
+#ifdef CD_DEBUG
+                    printf("\rCurrent iteration: %d...", t+1);
+                    fflush(stdout);
+#endif
                 }
             }
+#ifdef CD_DEBUG
+            utils::toc(start_t, end_t);
+            utils::pause();
+#endif
             
             /// CD for learning item topic factor (FISTA algorithm)
+#ifdef CD_DEBUG
+            cout << "CD for item topic factor" << endl;
+            utils::tic(start_t);
+#endif
             for (int i=0; i<n_items; i++) {
                 for (int k=0; k<K; k++)
                     t_k_i[i][k] = 1;
@@ -1269,7 +1337,7 @@ public:
                             #pragma omp parallel for
                             for (int k=0; k<K; k++) 
                                 exp_doctopic_sum_i[i][k] += exp_wordtopic_i[i][k]
-                                                          / exp_wordtopic_sum[i];
+                                                          / exp_wordtopic_sum_i[i];
                         }
                         #pragma omp parallel for
                         for (int k=0; k<K; k++)
@@ -1290,10 +1358,22 @@ public:
                         xk_gi[i][k] = xk1_gi[i][k];
                         exp_gi[i][k] = exp(gamma_item[i][k]);
                     }
+#ifdef CD_DEBUG
+                    printf("\rCurrent iteration: %d...", t+1);
+                    fflush(stdout);
+#endif
                 }
             }
+#ifdef CD_DEBUG
+            utils::toc(start_t, end_t);
+            utils::pause();
+#endif
 
             /// CD for learning dictionary base (Closed form solution)
+#ifdef CD_DEBUG
+            cout << "CD for learning dictionary base" << endl;
+            utils::tic(start_t);
+#endif
             memset(topic_words_sum, 0.0, sizeof(double)*K);
             #pragma omp parallel for
             for (int k=0; k<K; k++) {
@@ -1302,7 +1382,7 @@ public:
                             it!=train_votes.end(); it++) {
                     int user = (*it)->user;
                     int item = (*it)->item;
-                    exp_dict_sum[k] = exp_bt[k]*exp_gu[user][k]*exp_gi[item];
+                    exp_dict_sum[k] = exp_bt[k]*exp_gu[user][k]*exp_gi[item][k];
                     for (vector<int>::iterator it1=(*it)->words.begin();
                             it1!=(*it)->words.end(); it1++)
                         topic_words_bak[k][*it1] += exp_dict_sum[k]
@@ -1310,6 +1390,10 @@ public:
                 }
                 utils::normalize(topic_words[k], topic_words_bak[k], n_words);
             }
+#ifdef CD_DEBUG
+            utils::toc(start_t, end_t);
+            utils::pause();
+#endif
 
             evalRmseError(train_rmse, valid_rmse, test_rmse);
             printf("Current iteration: %d, Train RMSE=%.6f, ",
@@ -1340,6 +1424,76 @@ public:
             }
             cur_iter += 1;
         }
+
+        /// Release memory
+        for (int u=0; u<n_users; u++) {
+            delete inter_tu1[u];
+            delete inter_tu2[u]; 
+            delete exp_gu[u];
+            delete grad_gu[u];
+            delete exp_topic_u[u];
+            delete exp_doctopic_sum_u[u];
+            delete exp_wordtopic_u[u];
+            delete t_k_u;
+            delete t_k1_u;
+            delete xk_gu[u];
+            delete xk1_gu[u];
+        }
+        delete exp_topic_sum_u;
+        delete exp_wordtopic_sum_u;
+        delete[] inter_tu1;
+        delete[] inter_tu2; 
+        delete[] exp_gu;
+        delete[] grad_gu;
+        delete[] exp_topic_u;
+        delete[] exp_doctopic_sum_u;
+        delete[] exp_wordtopic_u;
+        delete[] t_k_u;
+        delete[] t_k1_u;
+        delete[] xk_gu;
+        delete[] xk1_gu;
+       
+        for (int i=0; i<n_items; i++) {
+            delete inter_ti1[i];
+            delete inter_ti2[i];
+            delete exp_gi[i];
+            delete grad_gi[i];
+            delete exp_topic_i[i];
+            delete exp_doctopic_sum_i[i];
+            delete exp_wordtopic_i[i];
+            delete t_k_i[i];
+            delete t_k1_i[i];
+            delete xk_gi[i];
+            delete xk1_gi[i];
+        }
+        delete exp_topic_sum_i;
+        delete exp_wordtopic_sum_i;
+        delete[] inter_ti1;
+        delete[] inter_ti2;
+        delete[] exp_gi;
+        delete[] grad_gi;
+        delete[] exp_topic_i;
+        delete[] exp_doctopic_sum_i;
+        delete[] exp_wordtopic_i;
+        delete[] t_k_i;
+        delete[] t_k1_i;
+        delete[] xk_gi;
+        delete[] xk1_gi;
+        
+        delete exp_bt;
+        delete grad_bt;
+        delete exp_topic;
+        delete exp_doctopic_sum;
+        delete exp_wordtopic;
+        delete t_k;
+        delete t_k1;
+        delete xk_bt;
+        delete xk1_bt;
+        delete topic_words_sum;
+        delete exp_dict_sum;
+        for (int k=0; k<K; k++)
+            delete topic_words_bak[k];
+        delete[] topic_words_bak;
     }
     
     void gibbsStochasticEm() {
@@ -1349,10 +1503,10 @@ public:
 
     void calDocTopic(double ** doc_topic, double& exp_sum, Vote * v) {
         exp_sum = 0.0;
-        for (int i=0; i<K; i++) {
-            (*doc_topic)[i] = exp(background_topic[i]+gamma_user[v->user][i]
-                    +gamma_item[v->item][i]);
-            exp_sum += (*doc_topic)[i];
+        for (int k=0; k<K; k++) {
+            (*doc_topic)[k] = exp(background_topic[k]+gamma_user[v->user][k]
+                    +gamma_item[v->item][k]);
+            exp_sum += (*doc_topic)[k];
         }
         //for (int i=0; i<K; i++)
         //    (*doc_topic)[i] /= exp_sum;
@@ -1413,7 +1567,11 @@ public:
         return  *mu + b_user[v->user] + b_item[v->item] 
                     + utils::dot(theta_user[v->user], theta_item[v->item], K);
     }
-    
+   
+    inline double predictionWithoutFactorProd(Vote * v) {
+        return *mu + b_item[v->item] + b_user[v->user];
+    }
+
     inline double predictionWithoutUserBias(Vote * v) {
         return  *mu + b_item[v->item] 
                     + utils::dot(theta_user[v->user], theta_item[v->item], K);
