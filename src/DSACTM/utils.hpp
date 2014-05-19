@@ -96,19 +96,27 @@ namespace utils{
             return x1;
         else
             return x2;
-    }
+    };
     inline double min(double x1, double x2) {
         if (x1 > x2)
             return x2;
         else
             return x1;
-    }
+    };
     inline double square(double x) {
         return x * x;
-    }
+    };
     inline double gsquare(double x) {
         return 2 * x;
-    }
+    };
+    inline double soft(double x, double delta) {
+        if (x >= 0)
+            return utils::max(x-delta, 0.0);
+        else
+            return utils::min(x+delta, 0.0);
+    };
+
+    void soft(double *x, double delta, int ndim);
     
     void matrixInversion(double **A, int order, double **Y);
     int getMinor(double **src, double **dest, int row, int col, int order);
@@ -118,7 +126,9 @@ namespace utils{
 							const double &dZ, const double &epsilon); 
     void project_beta1(double *beta, const int &nTerms);
 
-    void project_beta2( double *beta, const int &n_terms);
+    void project_beta2(double *beta, const int &n_terms);
+
+    void normalize(double * factor1, double * factor2, int ndim);
 
     /// random number generator
     double gaussrand(double ep, double var);
@@ -311,6 +321,14 @@ double utils::calcDeterminant( double **mat, int order) {
 }
 
 
+void utils::soft(double *x, double delta, int ndim) {
+    for (int i=0; i<ndim; i++) {
+        if (x[i] >= 0)
+            x[i] = utils::max(x[i]-delta, 0.0);
+        else
+            x[i] = utils::min(x[i]+delta, 0.0);
+    }
+}
 
 
 void utils::project_beta( double *beta, const int &nTerms, 
@@ -404,6 +422,16 @@ void utils::project_beta2( double *beta, const int &n_terms) {
     for (int i=0; i<n_terms; i++)
         beta[i] /= normalization;
 }
+
+
+void utils::normalize(double * factor1, double * factor2, int ndim) {
+    double normalization = 0.0;
+    for (int i=0; i<ndim; i++)
+        normalization += factor2[i];
+    for (int i=0; i<ndim; i++)
+        factor1[i] = factor2[i]/normalization;
+}
+
 
 FILE * utils::fopen_(const char* p, const char* m) {
     FILE *f = fopen(p, m);
