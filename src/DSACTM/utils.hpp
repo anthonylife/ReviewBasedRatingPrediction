@@ -25,8 +25,9 @@
 #include<string.h>
 #include<sys/time.h>
 #include<omp.h>
+#include<armadillo>
 
-//#define SPEED_MATINV
+#define SPEED_MATINV
 
 using namespace __gnu_cxx;
 namespace __gnu_cxx
@@ -91,6 +92,47 @@ namespace utils{
             result += factor1[i]*factor2[i];
         return result;
     };
+    inline double dot(double * factor1, double * factor2, int ndim, int k) {
+        double result = 0.0;
+        for (int i=0; i<ndim; i++) {
+            if (i == k)
+                continue;
+            result += factor1[i]*factor2[i];
+        }
+        return result;
+    };
+    inline void outerDotAccum(double * factor1, double * factor2,
+            double ** factor3, int ndim) {
+        for (int k1=0; k1<ndim; k1++)
+            for (int k2=0; k2<ndim; k2++)
+                factor3[k1][k2] += factor1[k1]*factor2[k2];
+    };
+    inline void vecProdNumAccum(double * factor1, double num,
+            double * factor2, int ndim) {
+        for (int i=0; i<ndim; i++)
+            factor2[i] += factor1[i]*num;
+    };
+    inline void matAddDiagnoal(double ** factor, double lambda, int ndim) {
+        for (int i=0; i<ndim; i++)
+            factor[i][i] += lambda;
+    };
+    inline void vecAddVec(double * factor1, double * factor2, int ndim){
+        for (int i=0; i<ndim; i++)
+            factor1[i] += factor2[i];
+    }
+    inline void vecAddVec(double * factor1, double * factor2,
+            double scale2, int ndim){
+        for (int i=0; i<ndim; i++)
+            factor1[i] += scale2*factor2[i];
+    }
+    inline void matProdVec(double ** factor1, double * factor2,
+            double * result, int ndim) {
+        for (int i1=0; i1<ndim; i1++) {
+            result[i1] = 0.0;
+            for (int i2=0; i2<ndim; i2++)
+                result[i1] += factor1[i1][i2]*factor2[i2];
+        }
+    }
     inline double max(double x1, double x2) {
         if (x1 > x2)
             return x1;
