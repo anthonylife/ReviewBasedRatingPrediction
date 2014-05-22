@@ -24,7 +24,7 @@
 //#define OL_I_T
 #define OL_DEBUG
 #define CD_DEBUG
-#define GBD_DEBUG
+//#define GBD_DEBUG
 
 using namespace std;
 using namespace __gnu_cxx;
@@ -48,6 +48,9 @@ class DSACTM{
     double lambda_u;        // laplace hyper for user topic      //
     double lambda_i;        // laplace hyper for item topic      //
     double lambda_b;        // laplace hyper for backgroud topic //
+    double reg_ut;          // gaussian hyper for user topic     //
+    double reg_it;          // gaussian hyper for item topic     //
+    double reg_bt;          // gaussian hyper for background topi//
     double psai_u;          // gaussian hyper for user factor    //
     double psai_i;          // gaussian hyper for item factor    //
     double sigma_u;         // gaussian hyper for user bias      //
@@ -98,6 +101,7 @@ public:
     DSACTM(char* trdata_path, char* vadata_path, char* tedata_path,
             char* model_path, int niters, double delta, int minibatch, double lr,
             int K, double lambda_u, double lambda_i, double lambda_b,
+            double reg_ut, double reg_it, double reg_bt,
             double psai_u, double psai_i, double sigma_u, double sigma_i,
             double sigma_a, int max_words, double alpha, int inner_niters, 
             int truncated_k, double truncated_theta, int tr_method, bool restart_tag){
@@ -113,6 +117,9 @@ public:
         this->lambda_u    = lambda_u;
         this->lambda_i    = lambda_i;
         this->lambda_b    = lambda_b;
+        this->reg_ut      = reg_ut;
+        this->reg_it      = reg_it;
+        this->reg_bt      = reg_bt;
         this->psai_u      = psai_u;
         this->psai_i      = psai_i;
         this->sigma_u     = sigma_u;
@@ -252,8 +259,8 @@ public:
             //utils::muldimPosUniform(theta_user[u], K, 1.0);
             //utils::muldimGaussrand(gamma_user[u], K);
             //utils::muldimUniform(gamma_user[u], K);
-            utils::muldimZero(gamma_user[u], K);
-            //utils::muldimPosUniform(gamma_user[u], K, 1.0);
+            //utils::muldimZero(gamma_user[u], K);
+            utils::muldimPosUniform(gamma_user[u], K, 1);
         }
         for (int i=0; i<n_items; i++) {
             utils::muldimGaussrand(theta_item[i], K);
@@ -262,14 +269,15 @@ public:
             //utils::muldimPosUniform(theta_item[i], K, 1.0);
             //utils::muldimGaussrand(gamma_item[i], K);
             //utils::muldimUniform(gamma_item[i], K);
-            utils::muldimZero(gamma_item[i], K);
-            //utils::muldimPosUniform(gamma_item[i], K, 1.0);
+            //utils::muldimZero(gamma_item[i], K);
+            utils::muldimPosUniform(gamma_item[i], K, 1);
         }
        
         // background topic factor initialization
         //for (int i=0; i<K; i++)
             //background_topic[i] = 1.0/K;
-        utils::muldimZero(background_topic, K);
+        //utils::muldimZero(background_topic, K);
+        utils::muldimPosUniform(background_topic, K, 1);
 
         // topic words dictionary with K bases
         for (int k=0; k<K; k++)
@@ -425,6 +433,30 @@ public:
 #endif
             for (vector<Vote*>::iterator it=train_votes.begin();
                     it!=train_votes.end(); it++) {
+                if ((*it)->words.size() == 0) {
+                    res = prediction(*it) - (*it)->value;
+                    for (int k=0; k<K; k++) {
+                        tmp_val1[k] = psai_u*(gamma_user[user][k]-theta_user[user][k]);
+                        tmp_val2[k] = psai_i*(gamma_item[item][k]-theta_item[item][k]);
+                        ggamma_user[k] -= tmp_val1[k];
+                        ggamma_item[k] -= tmp_val2[k];
+                        // compute gradient of user latent factor
+                        gtheta_user[k] = -theta_item[item][k]*res + tmp_val1[k];
+                        // compute gradient of item latent factor
+                        gtheta_item[k] = -theta_user[user][k]*res + tmp_val2[k];
+                        // update user latent factor
+                        theta_user[user][k] += lr*gtheta_user[k];
+                        // update item latent factor
+                        theta_item[item][k] += lr*gtheta_item[k]; 
+                    }
+                    // compute user bias gradient and update 
+                    b_user[user] += lr*(-res-sigma_u);
+                    // compute item bias gradient and update 
+                    b_item[item] += lr*(-res-sigma_i);
+                    // compute gradient of average para and update
+                    *mu += lr*(-res-sigma_a);
+                    continue;
+                }
 #ifdef OL_S_T
                 utils::tic(start_t);
 #endif
@@ -571,7 +603,7 @@ public:
                             it1!=gtopic_words[k]->end(); it1++)
                         topic_words[k][it1->first] += lr*alpha*it1->second;
                     //utils::project_beta(topic_words[k], n_words, 1, 1e-30);
-                    //utils::project_beta1(topic_words[k], n_words);
+                    utils::project_beta1(topic_words[k], n_words);
                     //utils::project_beta2(topic_words[k], n_words);
                     
                     // update user latent factor
@@ -583,10 +615,10 @@ public:
                 b_user[user] += lr*(-res-sigma_u);
                 // compute item bias gradient and update 
                 b_item[item] += lr*(-res-sigma_i);
-                // compute gradient of average para and update
 #ifdef OL_DEBUG
                 cout << "before mu=" << *mu <<endl;
 #endif
+                // compute gradient of average para and update
                 *mu += lr*(-res-sigma_a);
 #ifdef OL_DEBUG
                 cout << "after mu=" << *mu <<endl;
@@ -1095,7 +1127,6 @@ public:
                     for (int k=0; k<K; k++)
                         cout << gamma_user[user][k] << " ";
                     cout << endl;
-                    utils::pause();
                 }
                 utils::tic(start_t);
 #endif
@@ -1127,18 +1158,20 @@ public:
                     *mu += lr*(-res-sigma_a);
                 }
                 inner_iter += 1; 
-#ifdef GBD_DEBUG
+//#ifdef GBD_DEBUG
                 evalRmseError(train_rmse, valid_rmse, test_rmse);
                 printf("\rAfter inner iteration: %d, Train RMSE=%.6f, ",
                         inner_iter, train_rmse);
-                printf("Valid RMSE=%.6f, Test RMSE=%.6f!\n",
+                printf("Valid RMSE=%.6f, Test RMSE=%.6f!",
                         valid_rmse, test_rmse);
-                utils::toc(start_t, end_t);
+                fflush(stdout);
+                //utils::toc(start_t, end_t);
                 //utils::pause();
-#endif
+//#endif
             }
             
             /// CD for learning background topic factor (FISTA algorithm)
+            cout << endl << "CD for background topic factor" << endl;
 #ifdef GBD_DEBUG
             cout << "Coordinate Learning for background topic factor" << endl;
             utils::tic(start_t);
@@ -1217,17 +1250,18 @@ public:
 #endif
                 for (int k=0; k<K; k++) {
                     background_topic[k] = background_topic[k]
-                                        + lr*alpha*1.0/train_votes.size()
-                                          *grad_bt[k];
+                                        + lr*(alpha*1.0/train_votes.size()
+                                          *grad_bt[k]-reg_bt*background_topic[k]);
                     /*cout << "Background topic before soft: " << background_topic[k] << endl;
                     xk1_bt[k] = utils::soft(background_topic[k], lr*lambda_b);
                     cout << "Background topic after soft: " << xk1_bt[k] << endl;
-                    utils::pause();*/
+                    utils::pause();
+                    xk1_bt[k] = utils::soft(background_topic[k], lr*lambda_b);
                     t_k1[k] = (1+sqrt(1+4*t_k[k]*t_k[k]))/2;
                     background_topic[k] = xk1_bt[k]+(t_k[k]-1)/t_k1[k]
                                         * (xk1_bt[k]-xk_bt[k]);
                     t_k[k] = t_k1[k];
-                    xk_bt[k] = xk1_bt[k];
+                    xk_bt[k] = xk1_bt[k];*/
                     exp_bt[k] = exp(background_topic[k]);
                 }
 #ifdef GBD_DEBUG
@@ -1250,7 +1284,7 @@ public:
 #endif
             
             /// CD for learning user topic factor (FISTA algorithm)
-#ifdef CD_DEBUG
+#ifdef GBD_DEBUG
             cout << "Before training user topic factor, ";
             cout << "user 10, 100, 1000's factor: ";
             for (int k=0; k<K; k++)
@@ -1262,11 +1296,12 @@ public:
             for (int k=0; k<K; k++)
                 cout << gamma_user[1000][k] << " ";
             cout << endl;
-            utils::pause();
+            //utils::pause();
 
             cout << "Coordinate learning for user topic factor" << endl;
             utils::tic(start_t);
 #endif
+            cout << "Coordinate learning for user topic factor" << endl;
             for (int u=0; u<n_users; u++) {
                 for (int k=0; k<K; k++)
                     t_k_u[u][k] = 1;
@@ -1314,32 +1349,32 @@ public:
                         for (int k=0; k<K; k++)
                             cout << grad_gu[10][k] << " ";
                         cout << endl;
-                        utils::pause();
+                        //utils::pause();
                     } else if (u == 100) {
                         cout << "After 1 inner iteration for users" << endl;
                         for (int k=0; k<K; k++)
                             cout << grad_gu[100][k] << " ";
                         cout << endl;
-                        utils::pause();
+                        //utils::pause();
                     } else if (u==1000) {
                         cout << "After 1 inner iteration for users" << endl;
                         for (int k=0; k<K; k++)
                             cout << grad_gu[1000][k] << " ";
                         cout << endl;
-                        utils::pause();
+                        //utils::pause();
                     }
 #endif
                     //#pragma omp parallel for
                     for (int k=0; k<K; k++) {
                         gamma_user[u][k] = gamma_user[u][k]
-                                         + lr*alpha*1.0/train_votes_puser[u].size()
-                                           *grad_gu[u][k];
-                        xk1_gu[u][k] = utils::soft(gamma_user[u][k], lr*lambda_u);
+                                         + lr*(alpha*1.0/train_votes_puser[u].size()
+                                           *grad_gu[u][k]-reg_ut*gamma_user[u][k]);
+                        /*xk1_gu[u][k] = utils::soft(gamma_user[u][k], lr*lambda_u);
                         t_k1_u[u][k] = (1+sqrt(1+4*t_k_u[u][k]*t_k_u[u][k]))/2;
                         gamma_user[u][k] = xk1_gu[u][k]+(t_k_u[u][k]-1)/t_k1_u[u][k]
                                         * (xk1_gu[u][k]-xk_gu[u][k]);
                         t_k_u[u][k] = t_k1_u[u][k];
-                        xk_gu[u][k] = xk1_gu[u][k];
+                        xk_gu[u][k] = xk1_gu[u][k];*/
                         exp_gu[u][k] = exp(gamma_user[u][k]);
                     }
 #ifdef GBD_DEBUG
@@ -1348,19 +1383,19 @@ public:
                         for (int k=0; k<K; k++)
                             cout << gamma_user[10][k] << " ";
                         cout << endl;
-                        utils::pause();
+                        //utils::pause();
                     } else if (u == 100) {
                         cout << "After 1 inner iteration for users, gamma_user" << endl;
                         for (int k=0; k<K; k++)
                             cout << gamma_user[100][k] << " ";
                         cout << endl;
-                        utils::pause();
+                        //utils::pause();
                     } else if (u==1000) {
                         cout << "After 1 inner iteration for users, gamma_user" << endl;
                         for (int k=0; k<K; k++)
                             cout << gamma_user[1000][k] << " ";
                         cout << endl;
-                        utils::pause();
+                        //utils::pause();
                     }
 #endif
 #ifdef GBD_DEBUG
@@ -1372,15 +1407,21 @@ public:
 #ifdef GBD_DEBUG
             utils::toc(start_t, end_t);
             cout << "After training user topic factor, ";
-            cout << "user 10 factor: ";
+            cout << "user 10, 100, 1000's factor: ";
             for (int k=0; k<K; k++)
                 cout << gamma_user[10][k] << " ";
             cout << endl;
-            utils::pause();
+            for (int k=0; k<K; k++)
+                cout << gamma_user[100][k] << " ";
+            cout << endl;
+            for (int k=0; k<K; k++)
+                cout << gamma_user[1000][k] << " ";
+            cout << endl;
             utils::pause();
 #endif
             
             /// CD for learning item topic factor (FISTA algorithm)
+            cout << "CD for item topic factor" << endl;
 #ifdef GBD_DEBUG
             cout << "CD for item topic factor" << endl;
             utils::tic(start_t);
@@ -1429,14 +1470,14 @@ public:
                     //#pragma omp parallel for
                     for (int k=0; k<K; k++) {
                         gamma_item[i][k] = gamma_item[i][k]
-                                         + lr*alpha*1.0/train_votes_pitem[i].size()
-                                           *grad_gi[i][k];
-                        xk1_gi[i][k] = utils::soft(gamma_item[i][k], lr*lambda_i);
+                                         + lr*(alpha*1.0/train_votes_pitem[i].size()
+                                           *grad_gi[i][k]-reg_it*gamma_item[i][k]);
+                        /*xk1_gi[i][k] = utils::soft(gamma_item[i][k], lr*lambda_i);
                         t_k1_i[i][k] = (1+sqrt(1+4*t_k_i[i][k]*t_k_i[i][k]))/2;
                         gamma_item[i][k] = xk1_gi[i][k]+(t_k_i[i][k]-1)/t_k1_i[i][k]
                                         * (xk1_gi[i][k]-xk_gi[i][k]);
                         t_k_i[i][k] = t_k1_i[i][k];
-                        xk_gi[i][k] = xk1_gi[i][k];
+                        xk_gi[i][k] = xk1_gi[i][k];*/
                         exp_gi[i][k] = exp(gamma_item[i][k]);
                     }
 #ifdef GBD_DEBUG
@@ -1447,10 +1488,11 @@ public:
             }
 #ifdef GBD_DEBUG
             utils::toc(start_t, end_t);
-            utils::pause();
+            //utils::pause();
 #endif
 
             /// CD for learning dictionary base (Closed form solution)
+            cout << "CD for learning dictionary base" << endl;
 #ifdef GBD_DEBUG
             cout << "CD for learning dictionary base" << endl;
             utils::tic(start_t);
@@ -1473,7 +1515,7 @@ public:
             }
 #ifdef GBD_DEBUG
             utils::toc(start_t, end_t);
-            utils::pause();
+            //utils::pause();
 #endif
             
             evalRmseError(train_rmse, valid_rmse, test_rmse);
@@ -2267,11 +2309,11 @@ public:
         for (vector<Vote*>::iterator it = test_votes.begin();
                 it != test_votes.end(); it++)
             test += utils::square(prediction(*it) - (*it)->value) ;
-        cout << "Train: " << train << ", Size: " << train_votes.size() << endl;
+        //cout << "Train: " << train << ", Size: " << train_votes.size() << endl;
         train = sqrt(train/train_votes.size());
-        cout << "Valid: " << valid << ", Size: " << vali_votes.size() << endl;
+        //cout << "Valid: " << valid << ", Size: " << vali_votes.size() << endl;
         valid = sqrt(valid/vali_votes.size());
-        cout << "Test: " << test << ", Size: " << test_votes.size() << endl;
+        //cout << "Test: " << test << ", Size: " << test_votes.size() << endl;
         test = sqrt(test/test_votes.size());
     } 
 
