@@ -22,9 +22,11 @@
 //#define OL_M_T
 //#define OL_S_T
 //#define OL_I_T
-#define OL_DEBUG
-#define CD_DEBUG
+//#define OL_DEBUG
+//#define CD_DEBUG
 //#define GBD_DEBUG
+
+#define MINVAL 1e-8
 
 using namespace std;
 using namespace __gnu_cxx;
@@ -425,6 +427,7 @@ public:
         doc_topic = new double[K];
         converged = false;
         timeval start_t, end_t;
+        bool tag = false;
         while(!converged && cur_iter < niters) {
             random_shuffle(train_votes.begin(), train_votes.end());
             complete = 0;
@@ -433,8 +436,10 @@ public:
 #endif
             for (vector<Vote*>::iterator it=train_votes.begin();
                     it!=train_votes.end(); it++) {
+                res = prediction(*it) - (*it)->value;
+                user = (*it)->user;
+                item = (*it)->item;
                 if ((*it)->words.size() == 0) {
-                    res = prediction(*it) - (*it)->value;
                     for (int k=0; k<K; k++) {
                         tmp_val1[k] = psai_u*(gamma_user[user][k]-theta_user[user][k]);
                         tmp_val2[k] = psai_i*(gamma_item[item][k]-theta_item[item][k]);
@@ -460,14 +465,10 @@ public:
 #ifdef OL_S_T
                 utils::tic(start_t);
 #endif
-                user = (*it)->user;
-                item = (*it)->item;
-                //rating = (*it)->rating;
 #ifdef OL_M_T
                 printf("Debug: step 1\n");
                 utils::tic(start_t);
 #endif
-                res = prediction(*it) - (*it)->value;
 #ifdef OL_DEBUG
                 cout << "Word cnt = " << (*it)->words.size() << endl;
                 cout << "res = " << res << endl;
@@ -513,6 +514,14 @@ public:
                 utils::tic(start_t);
 #endif
                 calVbPara(&vb_word_topics, doc_topic, topic_words, (*it)->words);
+                for (vector<int>::iterator it1=(*it)->words.begin();
+                    it1!=(*it)->words.end(); it1++) {
+                    for (int k=0; k<K; k++)
+                        if (vb_word_topics[*it1][k] == 0) {
+                            printf("vb_word_topics[*it1][k]=0\n");
+                            utils::pause();
+                        }
+                }
 #ifdef OL_DEBUG
                 /*for (vector<int>::iterator it1=(*it)->words.begin();
                     it1!=(*it)->words.end(); it1++) {
@@ -534,38 +543,56 @@ public:
                 printf("Debug: step 4\n");
                 utils::tic(start_t);
 #endif
-                #pragma omp parallel for
+                //#pragma omp parallel for
                 for (int k=0; k<K; k++) {
+                    if (exp_sum == 0) {
+                        printf("Iteration: %d, exp_sum = 0\n", cur_iter);
+                        exit(1);
+                    }
                     double bt_tmpval = 1-doc_topic[k]/exp_sum;
-                    double gu_tmpval = 1-doc_topic[k]/exp_sum;
-                    double gi_tmpval = 1-doc_topic[k]/exp_sum;
+                    //double gu_tmpval = 1-doc_topic[k]/exp_sum;
+                    //double gi_tmpval = 1-doc_topic[k]/exp_sum;
                     for (vector<int>::iterator it1=(*it)->words.begin();
                             it1!=(*it)->words.end(); it1++) {
                         // compute gradient of background topic factor
                         gbackground_topic[k] += vb_word_topics[*it1][k]
                                               * bt_tmpval;
                         // compute gradient of user topic factor
-                        ggamma_user[k] += vb_word_topics[*it1][k]
-                                        * gu_tmpval;
+                        //ggamma_user[k] += vb_word_topics[*it1][k]
+                        //                * gu_tmpval;
                         // compute gradient of item topic factor
-                        ggamma_item[k] += vb_word_topics[*it1][k]
-                                        * gi_tmpval;
+                        //ggamma_item[k] += vb_word_topics[*it1][k]
+                        //                * gi_tmpval;
                         // compute gradient of dictionary bases
-                        if(gtopic_words[k]->find(*it1)==gtopic_words[k]->end())
+                        if (topic_words[k][*it1] == 0) {
+                            printf("%f\n", vb_word_topics[*it1][k]);
+                            printf("Iteration: %d, topic_words[k][*it1]=0\n", cur_iter);
+                            topic_words[k][*it1] = MINVAL;
+                            utils::pause();
+                        }
+                        if(gtopic_words[k]->find(*it1)==gtopic_words[k]->end()) {
                             (*gtopic_words[k])[*it1] = vb_word_topics[*it1][k]
                                                      / topic_words[k][*it1];
+                        }
                         else
                             (*gtopic_words[k])[*it1] += vb_word_topics[*it1][k]
                                                       / topic_words[k][*it1];
                     }
+                    ggamma_user[k] = gbackground_topic[k];
+                    ggamma_item[k] = gbackground_topic[k];
+
                     tmp_val1[k] = psai_u*(gamma_user[user][k]-theta_user[user][k]);
                     tmp_val2[k] = psai_i*(gamma_item[item][k]-theta_item[item][k]);
                     ggamma_user[k] -= tmp_val1[k];
                     ggamma_item[k] -= tmp_val2[k];
                     // compute gradient of user latent factor
-                    gtheta_user[k] = -theta_item[item][k]*res + tmp_val1[k];
+                    //gtheta_user[k] = -theta_item[item][k]*res + tmp_val1[k];
+                    gtheta_user[k] = -theta_item[item][k]*res + tmp_val1[k]
+                                   - psai_u*theta_user[item][k];
                     // compute gradient of item latent factor
-                    gtheta_item[k] = -theta_user[user][k]*res + tmp_val2[k];
+                    //gtheta_item[k] = -theta_user[user][k]*res + tmp_val2[k];
+                    gtheta_item[k] = -theta_user[user][k]*res + tmp_val2[k]
+                                   - psai_i*theta_item[item][k];
                 }
 #ifdef OL_DEBUG
                 cout << "background_topic:";
@@ -590,27 +617,40 @@ public:
                 printf("Debug: step 5\n");
                 utils::tic(start_t);
 #endif                
-                #pragma omp parallel for
+                //#pragma omp parallel for
                 for (int k=0; k<K; k++) {
                     // update background topic factor
-                    background_topic[k] += lr*alpha*gbackground_topic[k];
+                    background_topic[k] += lr*(alpha*gbackground_topic[k]
+                                           -reg_bt*background_topic[k]);
                     // update user topic factor
-                    gamma_user[user][k] += lr*alpha*ggamma_user[k];
+                    gamma_user[user][k] += lr*(alpha*ggamma_user[k]
+                                           -reg_ut*gamma_user[user][k]);
                     // update item topic factor
-                    gamma_item[item][k] += lr*alpha*ggamma_item[k];
+                    gamma_item[item][k] += lr*(alpha*ggamma_item[k]
+                                           -reg_it*gamma_item[item][k]);
                     // update dictionary base
                     for (map<int, double>::iterator it1=gtopic_words[k]->begin();
                             it1!=gtopic_words[k]->end(); it1++)
                         topic_words[k][it1->first] += lr*alpha*it1->second;
                     //utils::project_beta(topic_words[k], n_words, 1, 1e-30);
-                    utils::project_beta1(topic_words[k], n_words);
+                    //utils::project_beta1(topic_words[k], n_words, MINVAL);
                     //utils::project_beta2(topic_words[k], n_words);
-                    
+                    utils::normalize(topic_words[k], n_words, MINVAL);
+                    for (int w=0; w<n_words; w++) {
+                        if (topic_words[k][w] == 0) {
+                            printf("After normalization, topic_words[w]=0\n");
+                            if (tag == false) {
+                                utils::pause();
+                                tag = true;
+                            }
+                        }
+                    }
                     // update user latent factor
                     theta_user[user][k] += lr*gtheta_user[k];
                     // update item latent factor
                     theta_item[item][k] += lr*gtheta_item[k]; 
                 }
+                
                 // compute user bias gradient and update 
                 b_user[user] += lr*(-res-sigma_u);
                 // compute item bias gradient and update 
@@ -652,12 +692,12 @@ public:
                 complete++;
                 user_scan[user]++;
                 item_scan[item]++;
-                if (complete % truncated_k == 0)
+                /*if (complete % truncated_k == 0)
                     truncatedGradient(background_topic, lambda_b);
                 if (user_scan[user] % truncated_k == 0)
                     truncatedGradient(gamma_user[user], lambda_u);
                 if (item_scan[item] % truncated_k == 0)
-                    truncatedGradient(gamma_item[item], lambda_i);
+                    truncatedGradient(gamma_item[item], lambda_i);*/
 #ifdef OL_M_T
                 utils::toc(start_t, end_t);
                 utils::pause();
@@ -731,7 +771,7 @@ public:
     }
     
     void minibatchLearning() {
-        /*double train_rmse, valid_rmse, test_rmse;
+        double train_rmse, valid_rmse, test_rmse;
         double train_perp, valid_perp, test_perp;
         double obj_new, obj_old, best_valid, cur_valid;
         int * user_scan, * item_scan;
@@ -760,7 +800,7 @@ public:
         item_scan = new int[n_items];
         memset(item_scan, 0, sizeof(int)*n_items);
 
-        printf("Start online learning...\n");
+        printf("Start minibatch online learning...\n");
         tmp_val1 = new double[K];
         tmp_val2 = new double[K];
         cur_iter = 0;
@@ -769,129 +809,114 @@ public:
         doc_topic = new double[K];
         converged = false;
         timeval start_t, end_t;
+        utils::tic(start_t);
         while(!converged && cur_iter < niters) {
             random_shuffle(train_votes.begin(), train_votes.end());
             complete = 0;
-#ifdef OL_I_T
-            utils::tic(start_t);
-#endif
             for (vector<Vote*>::iterator it=train_votes.begin();
                     it!=train_votes.end(); it++) {
-#ifdef OL_S_T
-                utils::tic(start_t);
-#endif
-                user =  (*it)->user;
-                item = (*it)->item;
-                //rating = (*it)->rating;
-#ifdef OL_M_T
-                printf("Debug: step 1\n");
-                utils::tic(start_t);
-#endif
                 res = prediction(*it) - (*it)->value;
+                user = (*it)->user;
+                item = (*it)->item;
+                if ((*it)->words.size() == 0) {
+                    for (int k=0; k<K; k++) {
+                        tmp_val1[k] = psai_u*(gamma_user[user][k]-theta_user[user][k]);
+                        tmp_val2[k] = psai_i*(gamma_item[item][k]-theta_item[item][k]);
+                        ggamma_user[k] -= tmp_val1[k];
+                        ggamma_item[k] -= tmp_val2[k];
+                        // compute gradient of user latent factor
+                        gtheta_user[k] = -theta_item[item][k]*res + tmp_val1[k];
+                        // compute gradient of item latent factor
+                        gtheta_item[k] = -theta_user[user][k]*res + tmp_val2[k];
+                        // update user latent factor
+                        theta_user[user][k] += lr*gtheta_user[k];
+                        // update item latent factor
+                        theta_item[item][k] += lr*gtheta_item[k]; 
+                    }
+                    // compute user bias gradient and update 
+                    b_user[user] += lr*(-res-sigma_u);
+                    // compute item bias gradient and update 
+                    b_item[item] += lr*(-res-sigma_i);
+                    // compute gradient of average para and update
+                    *mu += lr*(-res-sigma_a);
+                    continue;
+                }
+                
                 memset(gbackground_topic, 0, sizeof(double)*K);
                 memset(ggamma_user, 0, sizeof(double)*K);
                 memset(ggamma_item, 0, sizeof(double)*K);
                 memset(gtheta_user, 0, sizeof(double)*K);
                 memset(gtheta_item, 0, sizeof(double)*K);
-#ifdef OL_M_T
-                utils::toc(start_t, end_t);
-                utils::pause();
-#endif
+                for (int k=0; k<K; k++){
+                    gtopic_words[k]->clear();
+                    map<int, double>(*gtopic_words[k]).swap(*gtopic_words[k]);
+                }
                 
                 // Note: first should compute doc topic distribution 
-#ifdef OL_M_T
-                printf("Debug: step 2\n");
-                utils::tic(start_t);
-#endif
                 calDocTopic(&doc_topic, exp_sum, *it);
-#ifdef OL_M_T
-                utils::toc(start_t, end_t);
-                utils::pause();
-#endif
                 
                 // compute variational doc word topic distribution para first
-#ifdef OL_M_T
-                printf("Debug: step 3\n");
-                utils::tic(start_t);
-#endif
                 calVbPara(&vb_word_topics, doc_topic, topic_words, (*it)->words);
-#ifdef OL_M_T
-                utils::toc(start_t, end_t);
-                utils::pause();
-#endif
-
+                
                 /// Compute gradients
-#ifdef OL_M_T
-                printf("Debug: step 4\n");
-                utils::tic(start_t);
-#endif
-                #pragma omp parallel for
+                //#pragma omp parallel for
                 for (int k=0; k<K; k++) {
+                    double bt_tmpval = 1-doc_topic[k]/exp_sum;
                     for (vector<int>::iterator it1=(*it)->words.begin();
-                            it1!=(*it)->words.end(); it1++)  {
-                        // compute gradient of background topic factor
+                            it1!=(*it)->words.end(); it1++) {
                         gbackground_topic[k] += vb_word_topics[*it1][k]
-                                         * (1-exp(background_topic[k])/exp_sum);
-                        // compute gradient of user topic factor
-                        ggamma_user[k] += vb_word_topics[*it1][k]
-                                    * (1-exp(gamma_user[user][k])/exp_sum);
-                        // compute gradient of item topic factor
-                        ggamma_item[k] += vb_word_topics[*it1][k]
-                                    * (1-exp(gamma_item[item][k])/exp_sum);
-                        // compute gradient of dictionary bases
-                        if(gtopic_words[k]->find(*it1)==gtopic_words[k]->end())
+                                              * bt_tmpval;
+                        if(gtopic_words[k]->find(*it1)==gtopic_words[k]->end()) {
                             (*gtopic_words[k])[*it1] = vb_word_topics[*it1][k]
                                                      / topic_words[k][*it1];
+                        }
                         else
                             (*gtopic_words[k])[*it1] += vb_word_topics[*it1][k]
                                                       / topic_words[k][*it1];
                     }
-                    tmp_val1[k] = psai_u*(gamma_user[k]-theta_user[k]);
-                    tmp_val2[k] = psai_i*(gamma_item[k]-theta_item[k]);
+                    ggamma_user[k] = gbackground_topic[k];
+                    ggamma_item[k] = gbackground_topic[k];
+
+                    tmp_val1[k] = psai_u*(gamma_user[user][k]-theta_user[user][k]);
+                    tmp_val2[k] = psai_i*(gamma_item[item][k]-theta_item[item][k]);
                     ggamma_user[k] -= tmp_val1[k];
                     ggamma_item[k] -= tmp_val2[k];
                     // compute gradient of user latent factor
-                    gtheta_user[k] = -theta_item[item][k]*res + tmp_val1[k];
+                    //gtheta_user[k] = -theta_item[item][k]*res + tmp_val1[k];
+                    gtheta_user[k] = -theta_item[item][k]*res + tmp_val1[k]
+                                   - psai_u*theta_user[item][k];
                     // compute gradient of item latent factor
-                    gtheta_item[k] = -theta_user[user][k]*res + tmp_val2[k];
+                    //gtheta_item[k] = -theta_user[user][k]*res + tmp_val2[k];
+                    gtheta_item[k] = -theta_user[user][k]*res + tmp_val2[k]
+                                   - psai_i*theta_item[item][k];
                 }
-#ifdef OL_M_T
-                utils::toc(start_t, end_t);
-                utils::pause();
-#endif                
+                
                 /// Update parameters
-#ifdef OL_M_T
-                printf("Debug: step 5\n");
-                utils::tic(start_t);
-#endif                
-                #pragma omp parallel for
+#pragma omp parallel for
                 for (int k=0; k<K; k++) {
                     // update background topic factor
-                    background_topic[k] += lr*gbackground_topic[k];
+                    background_topic[k] += lr*(alpha*gbackground_topic[k]
+                                           -reg_bt*background_topic[k]);
                     // update user topic factor
-                    gamma_user[user][k] += lr*ggamma_user[k];
+                    gamma_user[user][k] += lr*(alpha*ggamma_user[k]
+                                           -reg_ut*gamma_user[user][k]);
                     // update item topic factor
-                    gamma_item[item][k] += lr*ggamma_item[k];
+                    gamma_item[item][k] += lr*(alpha*ggamma_item[k]
+                                           -reg_it*gamma_item[item][k]);
                     // update user latent factor
                     theta_user[user][k] += lr*gtheta_user[k];
                     // update item latent factor
                     theta_item[item][k] += lr*gtheta_item[k]; 
                 }
+                
                 // compute user bias gradient and update 
                 b_user[user] += lr*(-res-sigma_u);
                 // compute item bias gradient and update 
                 b_item[item] += lr*(-res-sigma_i);
                 // compute gradient of average para and update
                 *mu += lr*(-res-sigma_a);
-#ifdef OL_M_T
-                utils::toc(start_t, end_t);
-                utils::pause();
-#endif                
-
-#ifdef OL_M_T
-                printf("Debug: step 6\n");
-                utils::tic(start_t);
-#endif                
+                
+                
                 complete++;
                 user_scan[user]++;
                 item_scan[item]++;
@@ -901,44 +926,42 @@ public:
                     truncatedGradient(gamma_user[user], lambda_u);
                 if (item_scan[item] % truncated_k == 0)
                     truncatedGradient(gamma_item[item], lambda_i);
-                // minibatch based updation for dictionary base
+                /// minibatch learning 
                 if (complete % minibatch == 0 || complete == train_votes.size()) {
                     for (int k=0; k<K; k++) {
                         for (map<int, double>::iterator it1=gtopic_words[k]->begin();
                                 it1!=gtopic_words[k]->end(); it1++)
                             topic_words[k][it1->first] += lr*it1->second/minibatch;
                         // project dictionary codes to probabilistic simplex
-                        utils::project_beta1(topic_words[k], n_words);
+                        utils::project_beta1(topic_words[k], n_words, MINVAL);
                         gtopic_words[k]->clear();
                         map<int, double>(*gtopic_words[k]).swap(*gtopic_words[k]);
                     }
                 }
-#ifdef OL_M_T
-                utils::toc(start_t, end_t);
-                utils::pause();
-#endif                
-            
-                //printf("\rFinished Scanning pairs: %d ......", complete);
-                //fflush(stdout);
                 if (complete % 1000 == 0) {
                     printf("\rFinished Scanning pairs: %d ......", complete);
                     fflush(stdout);
-#ifdef OL_I_T
-                    utils::toc(start_t, end_t);
-                    utils::pause();
+                    /*if (complete > 100000 && complete % 10000==0) {
+                        printf("Background topic: ");
+                        for (int k=0; k<K; k++)
+                            printf("%.4f ", background_topic[k]);
+                        printf("\nUser topic: ");
+                        for (int k=0; k<K; k++)
+                            printf("%.4f ", gamma_user[user][k]);
+                        printf("\nItem topic: ");
+                        for (int k=0; k<K; k++)
+                            printf("%.4f ", gamma_item[item][k]);
+                        printf("\n");
+                    }*/
+                    utils::toc(start_t, end_t, false);
                     utils::tic(start_t);
-#endif                
                 }
-#ifdef OL_S_T
-                utils::toc(start_t, end_t);
-                utils::pause();
-#endif                
             }
-
+            printf("\n");
+            //utils::toc(start_t, end_t, true);
             evalRmseError(train_rmse, valid_rmse, test_rmse);
             printf("Current iteration: %d, Train RMSE=%.6f, ", cur_iter+1, train_rmse);
             printf("Valid RMSE=%.6f, Test RMSE=%.6f!\n", valid_rmse, test_rmse);
-            
             cur_valid = valid_rmse;
             if (cur_valid < best_valid) {
                 best_valid = cur_valid;
@@ -957,8 +980,8 @@ public:
                 obj_old = train_rmse;
             else {
                 obj_new = train_rmse;
-                if (obj_new >= obj_old || fabs(obj_new-obj_old) < delta)
-                    converged = true;
+                //if (obj_new >= obj_old || fabs(obj_new-obj_old) < delta)
+                //    converged = true;
                 obj_old = obj_new;
             }
             cur_iter += 1;
@@ -982,7 +1005,7 @@ public:
         delete gtheta_user;
         delete gtheta_item;
         delete tmp_val1;
-        delete tmp_val2;*/
+        delete tmp_val2;
     }
     
     void gdBatchLearning() {
@@ -1135,7 +1158,7 @@ public:
                     user = (*it)->user;
                     item = (*it)->item;
                     res = prediction(*it) - (*it)->value;
-                    #pragma omp parallel for
+                    //#pragma omp parallel for
                     for (int k=0; k<K; k++) {
                         tmp_val1[k] = psai_u*(gamma_user[user][k]
                                       -theta_user[user][k]);
@@ -1749,7 +1772,7 @@ public:
                 cout << theta_user[1][k] << " ";
             cout << endl;
 #endif
-            for (int iii=0; iii<100; iii++){
+            for (int iii=0; iii<100; iii++) {
             /// CD for learning user latent factor
             for (int u=0; u<n_users; u++) {
                 M.zeros();

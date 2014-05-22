@@ -80,6 +80,7 @@ namespace utils{
     /// time measurement
     void tic(timeval &start_t);
     void toc(timeval &start_t, timeval &end_t);
+    void toc(timeval &start_t, timeval &end_t, bool newline);
 
 
     /// mathematical functions
@@ -166,11 +167,13 @@ namespace utils{
     
     void project_beta(double *beta, const int &nTerms, 
 							const double &dZ, const double &epsilon); 
-    void project_beta1(double *beta, const int &nTerms);
+    void project_beta1(double *beta, const int &nTerms, double min_val);
 
     void project_beta2(double *beta, const int &n_terms);
 
     void normalize(double * factor1, double * factor2, int ndim);
+
+    void normalize(double * factor, int ndim, double min_val);
 
     /// random number generator
     double gaussrand(double ep, double var);
@@ -425,7 +428,7 @@ void utils::project_beta( double *beta, const int &nTerms,
 
 
 // project beta to simplex ( N*log(N) ). (ICML-09, efficient L1 ball)
-void utils::project_beta1( double *beta, const int &nTerms) {
+void utils::project_beta1( double *beta, const int &nTerms, double min_val) {
 	double * mu_ = new double[nTerms];
 	// copy. (mu for temp use)
 	for ( int i=0; i<nTerms; i++ ) {
@@ -451,8 +454,13 @@ void utils::project_beta1( double *beta, const int &nTerms) {
 	theta = (theta-1) / (rho+1);
 
 	for ( int i=0; i<nTerms; i++ ) {
-		beta[i] = max(0.0, beta[i] - theta);
+		beta[i] = max(0.0, beta[i] - theta)+min_val;
 	}
+    double normalization = 0.0;
+    for (int i=0; i<nTerms; i++)
+        normalization += beta[i];
+    for (int i=0; i<nTerms; i++)
+        beta[i] /= normalization;
     delete mu_;
 }
 
@@ -472,6 +480,25 @@ void utils::normalize(double * factor1, double * factor2, int ndim) {
         normalization += factor2[i];
     for (int i=0; i<ndim; i++)
         factor1[i] = factor2[i]/normalization;
+}
+
+void utils::normalize(double * factor, int ndim, double min_val) {
+    double normalization = 0.0;
+    for (int i=0; i<ndim; i++)
+        normalization += factor[i];
+    
+    for (int i=0; i<ndim; i++) {
+        factor[i] = factor[i]/normalization;
+        if (factor[i] < min_val)
+            factor[i] = min_val;
+    }
+    
+    normalization = 0.0;
+    for (int i=0; i<ndim; i++)
+        normalization += factor[i];
+    
+    for (int i=0; i<ndim; i++)
+        factor[i] = factor[i]/normalization;
 }
 
 
@@ -544,9 +571,18 @@ void utils::tic(timeval &start_t) {
 void utils::toc(timeval &start_t, timeval &end_t){
     gettimeofday(&end_t, 0);
     double timeuse = 1000000*(end_t.tv_sec-start_t.tv_sec)+end_t.tv_usec-start_t.tv_usec;
-    printf("Time cost: %f(us)!\n", timeuse);
     printf("Time cost: %f(us), %f(s), %f(min)!\n", timeuse,
             timeuse/(1000*1000), timeuse/(1000*1000*60));
+}
+
+
+void utils::toc(timeval &start_t, timeval &end_t, bool newline){
+    gettimeofday(&end_t, 0);
+    double timeuse = 1000000*(end_t.tv_sec-start_t.tv_sec)+end_t.tv_usec-start_t.tv_usec;
+    printf("Time cost: %f(us), %f(s), %f(min)!", timeuse,
+            timeuse/(1000*1000), timeuse/(1000*1000*60));
+    if (newline)
+        printf("\n");
 }
 
 
