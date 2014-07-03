@@ -567,6 +567,59 @@ void topicCorpus::train(int emIterations, int gradIterations)
   }
 }
 
+double topicCorpus::testPerplexity() {
+    double perp = 0.0;
+    int word_cnt = 0, beer;
+    double word_log_prob = 0.0;
+    double ** beer_topicprob, ** topic_wordprob;
+
+    beer_topicprob = new double*[nBeers];
+    for (int beer=0; beer<nBeers; beer++) {
+        beer_topicprob[beer] = new double[K];
+        double tmp_sum = 0.0;
+        for (int k=0; k<K; k++)
+            tmp_sum += exp(*kappa * gamma_beer[beer][k]);
+        for (int k=0; k<K; k++)
+            beer_topicprob[beer][k] = exp(*kappa * gamma_beer[beer][k])
+                                    / tmp_sum;
+    }
+    topic_wordprob = new double*[K];
+    for (int k=0; k<K; k++) {
+        topic_wordprob[k] = new double[nWords];
+        double tmp_sum = 0.0;
+        for (int w=0; w<nWords; w++)
+            tmp_sum += exp(backgroundWords[w]+topicWords[w][k]);
+        for (int w=0; w<nWords; w++)
+            topic_wordprob[k][w] = exp(backgroundWords[w]+topicWords[w][k])
+                                 / tmp_sum;
+    }
+
+    word_cnt = 0.0, perp = 0.0;
+    for (set<vote*>::iterator it = testVotes.begin();
+                it != testVotes.end(); it++) {
+        beer = (*it)->item;
+        word_cnt += (*it)->words.size();
+        for (vector<int>::iterator it1 = (*it)->words.begin();
+                it1!=(*it)->words.end(); it1++) {
+            word_log_prob = 0.0;
+            for (int k=0; k<K; k++)
+                word_log_prob += beer_topicprob[beer][k]
+                               * topic_wordprob[k][*it1];
+            perp += log(word_log_prob);
+        }
+    } 
+    perp = exp(-perp/word_cnt);
+        
+    for (int beer=0; beer<nBeers; beer++)
+        delete beer_topicprob[beer];
+    delete beer_topicprob;
+    for (int k=0; k<K; k++)
+        delete topic_wordprob[k];
+    delete topic_wordprob;
+
+    return perp;
+}
+
 
 int ArgPos(char *str, int argc, char **argv) {
     int a;
@@ -588,7 +641,7 @@ int main(int argc, char** argv)
   
   /////////////////////////////////////
   double latentReg = 0.1;            //
-  double lambda = 0.1;               //
+  double lambda = 1;                 //
   int K = 40;                        //
   int em_iters = 50;                 //
   int grad_iters = 50;               //
@@ -611,28 +664,43 @@ int main(int argc, char** argv)
   char * b = NULL;
   if ((i = ArgPos((char *)"-d", argc, argv)) > 0) data_num = atoi(argv[i + 1]);
   if ((i = ArgPos((char *)"-r", argc, argv)) > 0) b = argv[i + 1];
-  if (data_num!=0 && data_num!=1) {
-    printf("Invalid choice of dataset!\n");
-    exit(1);
-  } else if (data_num==0) {
-    trdata_path = "../../data/yelp_train.dat";
-    vadata_path = "../../data/yelp_vali.dat";
-    tedata_path = "../../data/yelp_test.dat";
-    submission_path = "../../results/hft_result1.dat";
-  } else {
-    trdata_path = "../../data/amazonfood_train.dat";
-    vadata_path = "../../data/amazonfood_vali.dat";
-    tedata_path = "../../data/amazonfood_test.dat";
-    submission_path = "../../results/hft_result2.dat";
-  }
-  if (strcmp(b, (char *)"True") == 0)
-    restart_tag = true;
-  else if (strcmp(b, (char *)"False") == 0)
-    restart_tag = false;
-  else {
-    printf("Invalid input of para -r\n");
-    exit(1);
-  }
+  if ((i = ArgPos((char *)"-l", argc, argv)) > 0) lambda = atof(argv[i + 1]);
+    if (data_num!=0 && data_num!=1 && data_num!=2 && data_num!=3) {
+        printf("Invalid choice of dataset!\n");
+        exit(1);
+    } else if (data_num==0) {
+        trdata_path = "../../data/yelp_train.dat";
+        vadata_path = "../../data/yelp_vali.dat";
+        tedata_path = "../../data/yelp_test.dat";
+        submission_path = "../../results/dsactm_result1.dat";
+    } else if (data_num==1) {
+        trdata_path = "../../data/amazonfood_train.dat";
+        vadata_path = "../../data/amazonfood_vali.dat";
+        tedata_path = "../../data/amazonfood_test.dat";
+        submission_path = "../../results/dsactm_result2.dat";
+    } else if (data_num==2) {
+        trdata_path = "../../data/amazonmovie_train.dat";
+        vadata_path = "../../data/amazonmovie_vali.dat";
+        tedata_path = "../../data/amazonmovie_test.dat";
+        submission_path = "../../results/dsactm_result3.dat";
+    } else if (data_num==3){
+        trdata_path = "../../data/arts_train.dat";
+        vadata_path = "../../data/arts_vali.dat";
+        tedata_path = "../../data/arts_test.dat";
+        submission_path = "../../results/dsactm_result4.dat";
+    } else {
+        printf("Invalid choice of dataset\n");
+        exit(1);
+    }
+  
+    if (strcmp(b, (char *)"True") == 0)
+        restart_tag = true;
+    else if (strcmp(b, (char *)"False") == 0)
+        restart_tag = false;
+    else {
+        printf("Invalid input of para -r\n");
+        exit(1);
+    }
 
   printf("latentReg = %f\n", latentReg);
   printf("lambda = %f\n", lambda);
@@ -654,6 +722,8 @@ int main(int argc, char** argv)
   ec.train(em_iters, grad_iters);
   printf("Do rating prediction...\n");
   ec.save(modelPath, submission_path);
+  double perp = ec.testPerplexity();
+  printf("Test perplexity: %.4f!\n", perp);
   printf("Finish!\n");
 
   return 0;

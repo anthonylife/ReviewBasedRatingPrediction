@@ -236,6 +236,7 @@ public:
   void validTestError(double& train, double& valid, double& test, double& testSte);
   void normalizeWordWeights(void);
   void save(char* modelPath, char* predictionPath);
+  double testPerplexity();
 
   corpus* corp;
   
