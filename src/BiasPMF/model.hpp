@@ -14,20 +14,24 @@
 ///////////////////////////////////////////////////////////////////
 // Date: 2014/6/13                                               //
 // Model Implementation (BiasMF).                                //
-// PMF and Bias MF                                               //
+// PMF, NMF, SVD (Bias MF), SVD++, and review extended SVD.      //
 ///////////////////////////////////////////////////////////////////
 
-#include "utils.hpp"
+#include "../utils.hpp"
 #include "corpus.hpp"
 
 //#define DYNAMIC_LR
 #define MINVAL 1e-5
 #define BTOPIC_PEAKVAL 1e-2
 
+//#define NONNEG_SVD
+//#define NONNEG_SVDPP
+
+
 using namespace std;
 using namespace __gnu_cxx;
 
-class DSACTM{
+class MF{
     //******Model parameter needed to be specified by User*******//
     /// Method control variable                                  //
     int niters;                                                  //
@@ -50,6 +54,7 @@ class DSACTM{
     double reg_ti;          // reg hyper for item transform mat  //
     double psai_u;          // gaussian hyper for user factor    //
     double psai_i;          // gaussian hyper for item factor    //
+    double psai_i2;         // gaussian hyper for item factor    //
     double sigma_u;         // gaussian hyper for user bias      //
     double sigma_i;         // gaussian hyper for item bias      //
     double sigma_a;         // gaussian hyper for average        //
@@ -61,6 +66,8 @@ class DSACTM{
     //*******Model Parameter needed to be learned by Model*******//
     double ** theta_user;       // user latent factor            //
     double ** theta_item;       // item latent factor            //
+    double ** theta_item2;      // second item latent factor     //
+    double ** theta_term;       // term factor                   //
     double ** gamma_user;       // user topic factor             //
     double ** gamma_item;       // item topic factor             //
     double * tf_user;           // user transform factor         //
@@ -71,6 +78,7 @@ class DSACTM{
     double ** topic_words;      // word distribution of topics   //
     double * background_topic;  // backgroud topic distribution  //
     double ** vb_word_topics;   // topic distribution of word    //
+    double * svdpp_val;         // caching temporary values      //
     ///////////////////////////////////////////////////////////////
 
     int NW;         // total number of parameters
@@ -98,9 +106,9 @@ class DSACTM{
     char* model_path;
 
 public:
-    DSACTM(char* trdata_path, char* vadata_path, char* tedata_path,
+    MF(char* trdata_path, char* vadata_path, char* tedata_path,
             char* model_path, int niters, double delta, double lr, int K,
-            double psai_u, double psai_i, double sigma_u,
+            double psai_u, double psai_i, double psai_i2, double sigma_u,
             double sigma_i, double sigma_a,
             int max_words, int train_method, bool restart_tag){
         this->trdata_path = trdata_path;
@@ -113,6 +121,7 @@ public:
         this->K           = K;
         this->psai_u      = psai_u;
         this->psai_i      = psai_i;
+        this->psai_i2     = psai_i2;
         this->sigma_u     = sigma_u;
         this->sigma_i     = sigma_i;
         this->sigma_a     = sigma_a;
@@ -146,7 +155,8 @@ public:
         for (vector<Vote*>::iterator it = corp->VA_V->begin();
                 it != corp->VA_V->end(); it++)
             vali_votes.push_back(*it);
-        
+       
+        svdpp_val = new double[K];
         if (restart_tag == true) {
             printf("Para initialization from restart.\n");
             modelParaInit();
@@ -157,7 +167,7 @@ public:
         printf("Finishing all initialization.\n");
     }
     
-    ~DSACTM() {
+    ~MF() {
         delete corp;
         delete W;
         delete[] train_votes_puser;
@@ -166,6 +176,8 @@ public:
         if (theta_user) {
             delete[] theta_user;
             delete[] theta_item;
+            delete[] theta_item2;
+            delete[] theta_term;
             delete[] gamma_user;
             delete[] gamma_item;
             delete tf_user;
@@ -194,13 +206,14 @@ public:
 
     void modelParaInit() {
         // total number of paramters to be learned
-        NW = 1 + (n_users+n_items)*(K+1) + (n_users+n_items+1+2)*K + 2*K*n_words;
+        NW = 1 + (n_users+n_items)*(K+1) + n_items*K + (n_users+n_items+1+2)*K + 2*K*n_words + n_words*K;
         W = new double[NW];
         memset(W, 0, sizeof(double)*NW);
 
-        allocMemForPara(W, &mu, &b_user, &b_item, &theta_user, &theta_item,
-                &gamma_user, &gamma_item, &tf_user, &tf_item, &background_topic,
-                &topic_words, &vb_word_topics);
+        allocMemForPara(W, &mu, &b_user, &b_item, &theta_user,
+                &theta_item, &theta_item2, &gamma_user, &gamma_item,
+                &tf_user, &tf_item, &background_topic,
+                &topic_words, &vb_word_topics, &theta_term);
 
         // set mu to the average
         /*for (vector<Vote*>::iterator it=train_votes.begin();
@@ -210,12 +223,12 @@ public:
         *mu = 0;
         
         // set user and item rating bias
-        for (vector<Vote*>::iterator it=train_votes.begin();
+        /*for (vector<Vote*>::iterator it=train_votes.begin();
                 it!=train_votes.end(); it++) {
             b_user[(*it)->user] += (*it)->value - *mu;
             b_item[(*it)->item] += (*it)->value - *mu;
         }
-        /*for (int u=0; u<n_users; u++)
+        for (int u=0; u<n_users; u++)
             b_user[u] /= train_votes_puser[u].size();
         for (int i=0; i<n_items; i++) 
             b_item[i] /= train_votes_pitem[i].size();*/
@@ -243,6 +256,7 @@ public:
         utils::muldimGaussrand(tf_user, K);
         for (int i=0; i<n_items; i++) {
             utils::muldimGaussrand(theta_item[i], K);
+            utils::muldimGaussrand(theta_item2[i], K);
             //utils::muldimUniform(theta_item[i], K);
             //utils::muldimZero(theta_item[i], K);
             //utils::muldimPosUniform(theta_item[i], K, 1.0);
@@ -264,6 +278,9 @@ public:
         for (int k=0; k<K; k++)
             for (int i=0; i<n_words; i++)
                 topic_words[k][i] = 1.0/n_words;
+        for (int w=0; w<n_words; w++)
+            utils::muldimGaussrand(theta_term[w], K);
+
     }
 
     void allocMemForPara(double* g,
@@ -272,13 +289,15 @@ public:
                          double** gb_item,
                          double*** gtheta_user,
                          double*** gtheta_item,
+                         double*** gtheta_item2,
                          double*** ggamma_user,
                          double*** ggamma_item,
                          double** gtf_user,
                          double** gtf_item,
                          double** gbackground_topic,
                          double*** gtopic_words,
-                         double*** gword_topics) {
+                         double*** gword_topics,
+                         double*** gtheta_term) {
         int ind = 0;
         
         *gmu = g + ind;
@@ -297,6 +316,11 @@ public:
         *gtheta_item = new double*[n_items];
         for (int i=0; i < n_items; i++) {
             (*gtheta_item)[i] = g + ind;
+            ind += K;
+        }
+        *gtheta_item2 = new double*[n_items];
+        for (int i=0; i < n_items; i++) {
+            (*gtheta_item2)[i] = g + ind;
             ind += K;
         }
         *ggamma_user = new double*[n_users];
@@ -325,6 +349,11 @@ public:
             (*gword_topics)[i] = g + ind;
             ind += K;
         }
+        *gtheta_term = new double*[n_words];
+        for (int w=0; w<n_words; w++) {
+            (*gtheta_term)[w] = g + ind;
+            ind += K;
+        }
     }
 
     void freeMemForPara(double** gmu,
@@ -332,6 +361,7 @@ public:
                         double** gb_item,
                         double*** gtheta_user,
                         double*** gtheta_item,
+                        double*** gtheta_item2,
                         double*** ggamma_user,
                         double*** ggamma_item,
                         double** gtf_user,
@@ -345,6 +375,7 @@ public:
         delete *gbackground_topic;
         delete[] (*gtheta_user);
         delete[] (*gtheta_item);
+        delete[] (*gtheta_item2);
         delete[] (*ggamma_user);
         delete[] (*ggamma_item);
         delete (*gtf_user);
@@ -358,8 +389,18 @@ public:
             // PMF
             pmf();
         } else if (train_method == 1) {
+            // Non-negative MF
+            nmf();
+        } else if (train_method == 2) {
             // Bias MF
-            biasmf();
+            biasPmf();
+        } else if (train_method == 3) {
+            // Bias MF + implicit info
+            //svdpp();
+            svdpp1();
+        } else if (train_method == 4) {
+            // Bias MF
+            reviewExtendedBiasPmf();
         } else {
             printf("Invalid choice of learning method!\n");
             exit(1);
@@ -369,7 +410,7 @@ public:
 
     void pmf() {
         double train_rmse, valid_rmse, test_rmse;
-        double obj_new, obj_old, best_valid, cur_valid;
+        double obj_new, obj_old, best_valid, cur_valid, obj_test;
         int user, item, rating;
         double *gtheta_user, *gtheta_item;
         double res;
@@ -382,7 +423,7 @@ public:
             
         printf("Running the model of PMF ......\n");
         printf("Before SGD learning, evaluation results are following:\n");
-        evalRmseError(train_rmse, valid_rmse, test_rmse, false);
+        evalRmseError(train_rmse, valid_rmse, test_rmse, 0);
         printf("\tValid RMSE=%.6f, Test RMSE=%.6f;", valid_rmse, test_rmse);
         cur_iter = 0;
         obj_old = 1e5;
@@ -399,38 +440,39 @@ public:
 #endif
             for (vector<Vote*>::iterator it=train_votes.begin();
                     it!=train_votes.end(); it++) {
-                res = prediction(*it, false) - (*it)->value;
+                res = prediction(*it, 0) - (*it)->value;
                 user = (*it)->user;
                 item = (*it)->item;
                 for (int k=0; k<K; k++) {
                     // compute gradient of user latent factor
-                    gtheta_user[k] = -theta_item[item][k]*res - theta_user[user][k];
+                    gtheta_user[k] = -theta_item[item][k]*res - psai_u*theta_user[user][k];
                     // compute gradient of item latent factor
-                    gtheta_item[k] = -theta_user[user][k]*res - theta_item[item][k];
+                    gtheta_item[k] = -theta_user[user][k]*res - psai_i*theta_item[item][k];
                     // update user latent factor
                     theta_user[user][k] += lr*gtheta_user[k];
                     // update item latent factor
                     theta_item[item][k] += lr*gtheta_item[k]; 
                 }
             }
-            printf("\n");
+            //printf("\n");
             //utils::toc(start_t, end_t, true);
-            evalRmseError(train_rmse, valid_rmse, test_rmse, false);
+            evalRmseError(train_rmse, valid_rmse, test_rmse, 0);
             printf("Current iteration: %d, Train RMSE=%.6f, ", cur_iter+1, train_rmse);
             printf("Valid RMSE=%.6f, Test RMSE=%.6f\n", valid_rmse, test_rmse);
             
             cur_valid = valid_rmse;
             if (cur_valid < best_valid) {
                 best_valid = cur_valid;
+                obj_test = test_rmse;
                 for (vector<Vote*>::iterator it=train_votes.begin();
                         it!=train_votes.end(); it++)
-                    best_vali_predictions[*it] = prediction(*it, false);
+                    best_vali_predictions[*it] = prediction(*it, 0);
                 for (vector<Vote*>::iterator it=vali_votes.begin();
                         it!=vali_votes.end(); it++)
-                    best_vali_predictions[*it] = prediction(*it, false);
+                    best_vali_predictions[*it] = prediction(*it, 0);
                 for (vector<Vote*>::iterator it=test_votes.begin();
                         it!=test_votes.end(); it++)
-                    best_vali_predictions[*it] = prediction(*it, false);
+                    best_vali_predictions[*it] = prediction(*it, 0);
             }
             //utils::pause();
             if (cur_iter == 0)
@@ -444,6 +486,95 @@ public:
             cur_iter += 1;
         }
         printf("PMF learning finish...\n");
+        printf("RMSE on test dataset when validation results achieve best: %f\n", obj_test);
+        saveModelPara();
+
+        // release memory
+        delete[] gtheta_user;
+        delete[] gtheta_item;
+    }
+    
+    void nmf() {
+        double train_rmse, valid_rmse, test_rmse;
+        double obj_new, obj_old, best_valid, cur_valid, obj_test;
+        int user, item, rating;
+        double *gtheta_user, *gtheta_item;
+        double res;
+        int cur_iter, complete;
+        bool converged; 
+        double lr_c = lr;
+
+        gtheta_user = new double[K];
+        gtheta_item = new double[K];
+            
+        printf("Running the model of NMF ......\n");
+        printf("Before SGD learning, evaluation results are following:\n");
+        evalRmseError(train_rmse, valid_rmse, test_rmse, 0);
+        printf("\tValid RMSE=%.6f, Test RMSE=%.6f;", valid_rmse, test_rmse);
+        cur_iter = 0;
+        obj_old = 1e5;
+        best_valid = 1e5;
+        converged = false;
+        timeval start_t, end_t;
+        
+        utils::tic(start_t);
+        while(!converged && cur_iter < niters) {
+            random_shuffle(train_votes.begin(), train_votes.end());
+            complete = 0;
+#ifdef DYNAMIC_LR
+            lr = lr_c/(cur_iter+10);
+#endif
+            for (vector<Vote*>::iterator it=train_votes.begin();
+                    it!=train_votes.end(); it++) {
+                res = prediction(*it, 0) - (*it)->value;
+                user = (*it)->user;
+                item = (*it)->item;
+                for (int k=0; k<K; k++) {
+                    // compute gradient of user latent factor
+                    gtheta_user[k] = -theta_item[item][k]*res - psai_u*theta_user[user][k];
+                    // compute gradient of item latent factor
+                    gtheta_item[k] = -theta_user[user][k]*res - psai_i*theta_item[item][k];
+                    // update user latent factor
+                    theta_user[user][k] += lr*gtheta_user[k];
+                    utils::max(0.0, theta_user[user][k]);
+                    // update item latent factor
+                    theta_item[item][k] += lr*gtheta_item[k]; 
+                    utils::max(0.0, theta_item[item][k]);
+                }
+            }
+            //printf("\n");
+            //utils::toc(start_t, end_t, true);
+            evalRmseError(train_rmse, valid_rmse, test_rmse, 0);
+            printf("Current iteration: %d, Train RMSE=%.6f, ", cur_iter+1, train_rmse);
+            printf("Valid RMSE=%.6f, Test RMSE=%.6f\n", valid_rmse, test_rmse);
+            
+            cur_valid = valid_rmse;
+            if (cur_valid < best_valid) {
+                best_valid = cur_valid;
+                obj_test = test_rmse;
+                for (vector<Vote*>::iterator it=train_votes.begin();
+                        it!=train_votes.end(); it++)
+                    best_vali_predictions[*it] = prediction(*it, 0);
+                for (vector<Vote*>::iterator it=vali_votes.begin();
+                        it!=vali_votes.end(); it++)
+                    best_vali_predictions[*it] = prediction(*it, 0);
+                for (vector<Vote*>::iterator it=test_votes.begin();
+                        it!=test_votes.end(); it++)
+                    best_vali_predictions[*it] = prediction(*it, 0);
+            }
+            //utils::pause();
+            if (cur_iter == 0)
+                obj_old = train_rmse;
+            else {
+                obj_new = train_rmse;
+                //if (obj_new >= obj_old || fabs(obj_new-obj_old) < delta)
+                //    converged = true;
+                obj_old = obj_new;
+            }
+            cur_iter += 1;
+        }
+        printf("NMF learning finish...\n");
+        printf("RMSE on test dataset when validation results achieve best: %f\n", obj_test);
         saveModelPara();
 
         // release memory
@@ -451,7 +582,7 @@ public:
         delete[] gtheta_item;
     }
 
-    void biasmf() {
+    void biasPmf() {
         double train_rmse, valid_rmse, test_rmse;
         double obj_new, obj_old, best_valid, cur_valid;
         int user, item, rating;
@@ -466,7 +597,7 @@ public:
             
         printf("Running the model of SVD (BiasMF) ......\n");
         printf("Before SGD learning, evaluation results are following:\n");
-        evalRmseError(train_rmse, valid_rmse, test_rmse, true);
+        evalRmseError(train_rmse, valid_rmse, test_rmse, 1);
         printf("\tValid RMSE=%.6f, Test RMSE=%.6f;", valid_rmse, test_rmse);
         cur_iter = 0;
         obj_old = 1e5;
@@ -483,14 +614,14 @@ public:
 #endif
             for (vector<Vote*>::iterator it=train_votes.begin();
                     it!=train_votes.end(); it++) {
-                res = prediction(*it, true) - (*it)->value;
+                res = prediction(*it, 1) - (*it)->value;
                 user = (*it)->user;
                 item = (*it)->item;
                 for (int k=0; k<K; k++) {
                     // compute gradient of user latent factor
-                    gtheta_user[k] = -theta_item[item][k]*res - theta_user[user][k];
+                    gtheta_user[k] = -theta_item[item][k]*res - psai_u*theta_user[user][k];
                     // compute gradient of item latent factor
-                    gtheta_item[k] = -theta_user[user][k]*res - theta_item[item][k];
+                    gtheta_item[k] = -theta_user[user][k]*res - psai_i*theta_item[item][k];
                     // update user latent factor
                     theta_user[user][k] += lr*gtheta_user[k];
                     // update item latent factor
@@ -501,12 +632,13 @@ public:
                 // compute item bias gradient and update 
                 b_item[item] += lr*(-res-sigma_i*b_item[item]);
                 // compute gradient of average para and update
-                *mu += lr*(-res-sigma_a*(*mu));
+                //*mu += lr*(-res-sigma_a*(*mu));
+                *mu += lr*(-res);
                 
             }
-            printf("\n");
+            //printf("\n");
             //utils::toc(start_t, end_t, true);
-            evalRmseError(train_rmse, valid_rmse, test_rmse, true);
+            evalRmseError(train_rmse, valid_rmse, test_rmse, 1);
             printf("Current iteration: %d, Train RMSE=%.6f, ", cur_iter+1, train_rmse);
             printf("Valid RMSE=%.6f, Test RMSE=%.6f\n", valid_rmse, test_rmse);
             
@@ -515,13 +647,13 @@ public:
                 best_valid = cur_valid;
                 for (vector<Vote*>::iterator it=train_votes.begin();
                         it!=train_votes.end(); it++)
-                    best_vali_predictions[*it] = prediction(*it, true);
+                    best_vali_predictions[*it] = prediction(*it, 1);
                 for (vector<Vote*>::iterator it=vali_votes.begin();
                         it!=vali_votes.end(); it++)
-                    best_vali_predictions[*it] = prediction(*it, true);
+                    best_vali_predictions[*it] = prediction(*it, 1);
                 for (vector<Vote*>::iterator it=test_votes.begin();
                         it!=test_votes.end(); it++)
-                    best_vali_predictions[*it] = prediction(*it, true);
+                    best_vali_predictions[*it] = prediction(*it, 1);
             }
             //utils::pause();
             if (cur_iter == 0)
@@ -540,6 +672,301 @@ public:
         // release memory
         delete[] gtheta_user;
         delete[] gtheta_item;
+    }
+    
+    void svdpp() {
+        double train_rmse, valid_rmse, test_rmse;
+        double obj_new, obj_old, best_valid, cur_valid;
+        int user, item, rating;
+        double *gtheta_user, *gtheta_item, *gtheta_item2;
+        double res, sqrt_num;
+        int cur_iter, complete;
+        bool converged; 
+        double lr_c = lr;
+
+        gtheta_user = new double[K];
+        gtheta_item = new double[K];
+        gtheta_item2 = new double[K];
+
+        printf("Running the model of SVDPP (BiasMF+implicit feedback) ......\n");
+        printf("Before SGD learning, evaluation results are following:\n");
+        evalRmseError(train_rmse, valid_rmse, test_rmse, 2);
+        printf("\tValid RMSE=%.6f, Test RMSE=%.6f;", valid_rmse, test_rmse);
+        cur_iter = 0;
+        obj_old = 1e5;
+        best_valid = 1e5;
+        converged = false;
+        timeval start_t, end_t;
+        
+        utils::tic(start_t);
+        while(!converged && cur_iter < niters) {
+            random_shuffle(train_votes.begin(), train_votes.end());
+            complete = 0;
+#ifdef DYNAMIC_LR
+            lr = lr_c/(cur_iter+10);
+#endif
+            for (vector<Vote*>::iterator it=train_votes.begin();
+                    it!=train_votes.end(); it++) {
+                res = prediction(*it, 2) - (*it)->value;
+                user = (*it)->user;
+                item = (*it)->item;
+                sqrt_num = 1.0/sqrt(train_votes_puser[user].size());
+                for (int k=0; k<K; k++) {
+                    // compute gradient of user latent factor
+                    gtheta_user[k] = -theta_item[item][k]*res - psai_u*theta_user[user][k];
+                    // compute gradient of item latent factor
+                    gtheta_item[k] = -theta_user[user][k]*res - psai_i*theta_item[item][k];
+                    // update implicit item latent factor2
+                    for (vector<Vote*>::iterator it1=train_votes_puser[user].begin();
+                            it1!=train_votes_puser[user].end(); it1++)
+                        theta_item2[(*it1)->item][k] += lr*(-theta_item[item][k]*res*sqrt_num - psai_i2*theta_item2[(*it1)->item][k]);
+                    // update user latent factor
+                    theta_user[user][k] += lr*gtheta_user[k];
+                    // update item latent factor
+                    theta_item[item][k] += lr*gtheta_item[k];
+                }
+                // compute user bias gradient and update 
+                b_user[user] += lr*(-res-sigma_u*b_user[user]);
+                // compute item bias gradient and update 
+                b_item[item] += lr*(-res-sigma_i*b_item[item]);
+                // compute gradient of average para and update
+                //*mu += lr*(-res-sigma_a*(*mu));
+                *mu += lr*(-res);
+                
+            }
+            //printf("\n");
+            //utils::toc(start_t, end_t, true);
+            evalRmseError(train_rmse, valid_rmse, test_rmse, 2);
+            printf("Current iteration: %d, Train RMSE=%.6f, ", cur_iter+1, train_rmse);
+            printf("Valid RMSE=%.6f, Test RMSE=%.6f\n", valid_rmse, test_rmse);
+            
+            cur_valid = valid_rmse;
+            if (cur_valid < best_valid) {
+                best_valid = cur_valid;
+                for (vector<Vote*>::iterator it=train_votes.begin();
+                        it!=train_votes.end(); it++)
+                    best_vali_predictions[*it] = prediction(*it, 2);
+                for (vector<Vote*>::iterator it=vali_votes.begin();
+                        it!=vali_votes.end(); it++)
+                    best_vali_predictions[*it] = prediction(*it, 2);
+                for (vector<Vote*>::iterator it=test_votes.begin();
+                        it!=test_votes.end(); it++)
+                    best_vali_predictions[*it] = prediction(*it, 2);
+            }
+            //utils::pause();
+            if (cur_iter == 0)
+                obj_old = train_rmse;
+            else {
+                obj_new = train_rmse;
+                //if (obj_new >= obj_old || fabs(obj_new-obj_old) < delta)
+                //    converged = true;
+                obj_old = obj_new;
+            }
+            cur_iter += 1;
+        }
+        printf("BiasMF learning finish...\n");
+        saveModelPara();
+
+        // release memory
+        delete[] gtheta_user;
+        delete[] gtheta_item;
+    }
+    
+    void svdpp1() {
+        double train_rmse, valid_rmse, test_rmse;
+        double obj_new, obj_old, best_valid, cur_valid;
+        int user, item, rating;
+        double *gtheta_user, *gtheta_item, *gtheta_item2;
+        double res, sqrt_num;
+        int cur_iter, complete;
+        bool converged; 
+        double lr_c = lr;
+
+        gtheta_user = new double[K];
+        gtheta_item = new double[K];
+        gtheta_item2 = new double[K];
+
+        printf("Running the model of SVDPP (BiasMF+implicit feedback) ......\n");
+        printf("Before SGD learning, evaluation results are following:\n");
+        evalRmseError(train_rmse, valid_rmse, test_rmse, 2);
+        printf("\tValid RMSE=%.6f, Test RMSE=%.6f;", valid_rmse, test_rmse);
+        cur_iter = 0;
+        obj_old = 1e5;
+        best_valid = 1e5;
+        converged = false;
+        timeval start_t, end_t;
+        
+        utils::tic(start_t);
+        while(!converged && cur_iter < niters) {
+            random_shuffle(train_votes.begin(), train_votes.end());
+            complete = 0;
+#ifdef DYNAMIC_LR
+            lr = lr_c/(cur_iter+10);
+#endif
+            for (vector<Vote*>::iterator it=train_votes.begin();
+                    it!=train_votes.end(); it++) {
+                res = prediction(*it, 2) - (*it)->value;
+                user = (*it)->user;
+                item = (*it)->item;
+                sqrt_num = 1.0/sqrt(train_votes_puser[user].size());
+                for (int k=0; k<K; k++) {
+                    // compute gradient of user latent factor
+                    gtheta_user[k] = -theta_item[item][k]*res - psai_u*theta_user[user][k];
+                    // compute gradient of item latent factor
+                    gtheta_item[k] = -theta_user[user][k]*res - psai_i*theta_item[item][k];
+                    // update implicit item latent factor2
+                    theta_item2[item][k] += lr*(-theta_item[item][k]*res*sqrt_num - psai_i2*theta_item2[item][k]);
+                    // update user latent factor
+                    theta_user[user][k] += lr*gtheta_user[k];
+                    // update item latent factor
+                    theta_item[item][k] += lr*gtheta_item[k];
+                }
+                // compute user bias gradient and update 
+                b_user[user] += lr*(-res-sigma_u*b_user[user]);
+                // compute item bias gradient and update 
+                b_item[item] += lr*(-res-sigma_i*b_item[item]);
+                // compute gradient of average para and update
+                //*mu += lr*(-res-sigma_a*(*mu));
+                *mu += lr*(-res);
+                
+            }
+            //printf("\n");
+            //utils::toc(start_t, end_t, true);
+            evalRmseError(train_rmse, valid_rmse, test_rmse, 2);
+            printf("Current iteration: %d, Train RMSE=%.6f, ", cur_iter+1, train_rmse);
+            printf("Valid RMSE=%.6f, Test RMSE=%.6f\n", valid_rmse, test_rmse);
+            
+            cur_valid = valid_rmse;
+            if (cur_valid < best_valid) {
+                best_valid = cur_valid;
+                for (vector<Vote*>::iterator it=train_votes.begin();
+                        it!=train_votes.end(); it++)
+                    best_vali_predictions[*it] = prediction(*it, 2);
+                for (vector<Vote*>::iterator it=vali_votes.begin();
+                        it!=vali_votes.end(); it++)
+                    best_vali_predictions[*it] = prediction(*it, 2);
+                for (vector<Vote*>::iterator it=test_votes.begin();
+                        it!=test_votes.end(); it++)
+                    best_vali_predictions[*it] = prediction(*it, 2);
+            }
+            //utils::pause();
+            if (cur_iter == 0)
+                obj_old = train_rmse;
+            else {
+                obj_new = train_rmse;
+                //if (obj_new >= obj_old || fabs(obj_new-obj_old) < delta)
+                //    converged = true;
+                obj_old = obj_new;
+            }
+            cur_iter += 1;
+        }
+        printf("BiasMF learning finish...\n");
+        saveModelPara();
+
+        // release memory
+        delete[] gtheta_user;
+        delete[] gtheta_item;
+    }
+    
+    void reviewExtendedBiasPmf() {
+        double train_rmse, valid_rmse, test_rmse;
+        double obj_new, obj_old, best_valid, cur_valid;
+        int user, item, rating;
+        double *gtheta_user, *gtheta_item, *gtheta_term;
+        double res;
+        int cur_iter, complete;
+        bool converged; 
+        double lr_c = lr;
+
+        gtheta_user = new double[K];
+        gtheta_item = new double[K];
+        gtheta_term = new double[K];
+            
+        printf("Running the model of review extended BiasMF ......\n");
+        printf("Before SGD learning, evaluation results are following:\n");
+        evalRmseError(train_rmse, valid_rmse, test_rmse, 3);
+        printf("\tValid RMSE=%.6f, Test RMSE=%.6f;", valid_rmse, test_rmse);
+        cur_iter = 0;
+        obj_old = 1e5;
+        best_valid = 1e5;
+        converged = false;
+        timeval start_t, end_t;
+        
+        utils::tic(start_t);
+        while(!converged && cur_iter < niters) {
+            random_shuffle(train_votes.begin(), train_votes.end());
+            complete = 0;
+#ifdef DYNAMIC_LR
+            lr = lr_c/(cur_iter+10);
+#endif
+            for (vector<Vote*>::iterator it=train_votes.begin();
+                    it!=train_votes.end(); it++) {
+                res = prediction(*it, 3) - (*it)->value;
+                user = (*it)->user;
+                item = (*it)->item;
+                for (int k=0; k<K; k++) {
+                    // compute gradient of user latent factor
+                    gtheta_user[k] = -theta_item[item][k]*res - psai_u*theta_user[user][k];
+                    // compute gradient of item latent factor
+                    gtheta_item[k] = -theta_user[user][k]*res - psai_i*theta_item[item][k];
+                    // compute gradient of term latent factor and update
+                    if ((*it)->words.size() > 0) {
+                        for (vector<int>::iterator it1=(*it)->words.begin();
+                                it1!=(*it)->words.end(); it1++)
+                            theta_term[*it1][k]+= lr*(-theta_user[user][k]*res/(*it)->words.size()-psai_i2*theta_term[*it1][k]);
+                    }
+                    // update user latent factor
+                    theta_user[user][k] += lr*gtheta_user[k];
+                    // update item latent factor
+                    theta_item[item][k] += lr*gtheta_item[k];
+
+                }
+                // compute user bias gradient and update 
+                b_user[user] += lr*(-res-sigma_u*b_user[user]);
+                // compute item bias gradient and update 
+                b_item[item] += lr*(-res-sigma_i*b_item[item]);
+                // compute gradient of average para and update
+                //*mu += lr*(-res-sigma_a*(*mu));
+                *mu += lr*(-res);
+                
+            }
+            //printf("\n");
+            //utils::toc(start_t, end_t, true);
+            evalRmseError(train_rmse, valid_rmse, test_rmse, 3);
+            printf("Current iteration: %d, Train RMSE=%.6f, ", cur_iter+1, train_rmse);
+            printf("Valid RMSE=%.6f, Test RMSE=%.6f\n", valid_rmse, test_rmse);
+            
+            cur_valid = valid_rmse;
+            if (cur_valid < best_valid) {
+                best_valid = cur_valid;
+                for (vector<Vote*>::iterator it=train_votes.begin();
+                        it!=train_votes.end(); it++)
+                    best_vali_predictions[*it] = prediction(*it, 3);
+                for (vector<Vote*>::iterator it=vali_votes.begin();
+                        it!=vali_votes.end(); it++)
+                    best_vali_predictions[*it] = prediction(*it, 3);
+                for (vector<Vote*>::iterator it=test_votes.begin();
+                        it!=test_votes.end(); it++)
+                    best_vali_predictions[*it] = prediction(*it, 3);
+            }
+            //utils::pause();
+            if (cur_iter == 0)
+                obj_old = train_rmse;
+            else {
+                obj_new = train_rmse;
+                //if (obj_new >= obj_old || fabs(obj_new-obj_old) < delta)
+                //    converged = true;
+                obj_old = obj_new;
+            }
+            cur_iter += 1;
+        }
+        printf("Review extended BiasMF learning finish...\n");
+        saveModelPara();
+
+        // release memory
+        delete[] gtheta_user;
+        delete[] gtheta_item;
+        delete[] gtheta_term;
     }
     
     void gdBatchLearning() {
@@ -630,12 +1057,38 @@ public:
         }
     }
 
-    inline double prediction(Vote * v, bool biastag) {
-        if (biastag)
+    inline double prediction(Vote * v, int tag) {
+        if (tag == 0)
+            return utils::dot(theta_user[v->user], theta_item[v->item], K);
+        else if (tag == 1)
             return *mu + b_user[v->user] + b_item[v->item] 
                    + utils::dot(theta_user[v->user], theta_item[v->item], K);
-        else
-            return utils::dot(theta_user[v->user], theta_item[v->item], K);
+        else if (tag == 2) {
+            double first = *mu + b_user[v->user] + b_item[v->item] 
+                   + utils::dot(theta_user[v->user], theta_item[v->item], K);
+            memset(svdpp_val, 0.0, sizeof(double)*K);
+            for (vector<Vote*>::iterator it=train_votes_puser[v->user].begin();
+                    it!=train_votes_puser[v->user].end(); it++) {
+                for (int k=0; k<K; k++)
+                    svdpp_val[k] += theta_item2[(*it)->item][k];
+            }
+            return first+1.0/sqrt(train_votes_puser[v->user].size())*utils::dot(theta_user[v->user], svdpp_val, K);
+        } else if (tag == 3) {
+            double first = *mu + b_user[v->user] + b_item[v->item] 
+                   + utils::dot(theta_user[v->user], theta_item[v->item], K);
+            memset(svdpp_val, 0.0, sizeof(double)*K);
+            if (v->words.size() == 0)
+                return first;
+            for (vector<int>::iterator it=v->words.begin();
+                    it!=v->words.end(); it++) {
+                for (int k=0; k<K; k++)
+                    svdpp_val[k] += theta_term[*it][k];
+            }
+            return first+1.0/v->words.size()*utils::dot(theta_user[v->user], svdpp_val, K);
+        } else {
+            printf("Invalid choice of tag!\n");
+            exit(1);
+        }
     }
    
     inline double predictionWithoutFactorProd(Vote * v) {
@@ -662,17 +1115,17 @@ public:
                     + utils::dot(theta_user[v->user], theta_item[v->item], K);
     }
 
-    void evalRmseError(double& train, double& valid, double& test, bool biastag) {
+    void evalRmseError(double& train, double& valid, double& test, int tag) {
         train = 0.0, valid = 0.0, test = 0.0;
         for (vector<Vote*>::iterator it = train_votes.begin();
                 it != train_votes.end(); it++)
-            train += utils::square(prediction(*it, biastag) - (*it)->value) ;
+            train += utils::square(prediction(*it, tag) - (*it)->value) ;
         for (vector<Vote*>::iterator it = vali_votes.begin();
                 it != vali_votes.end(); it++)
-            valid += utils::square(prediction(*it, biastag) - (*it)->value) ;
+            valid += utils::square(prediction(*it, tag) - (*it)->value) ;
         for (vector<Vote*>::iterator it = test_votes.begin();
                 it != test_votes.end(); it++)
-            test += utils::square(prediction(*it, biastag) - (*it)->value) ;
+            test += utils::square(prediction(*it, tag) - (*it)->value) ;
         //cout << "Train: " << train << ", Size: " << train_votes.size() << endl;
         train = sqrt(train/train_votes.size());
         //cout << "Valid: " << valid << ", Size: " << vali_votes.size() << endl;
