@@ -29,24 +29,24 @@ public:
                                                                  //
     const static int ndim = 40;   // latant factor dimension     //
     const static int naspects = 5;                               // 
-    constexpr static double lambda_u = 0.1;                          //
-    constexpr static double lambda_i = 1;                            //
-    constexpr static double psai_u = 0.1;                            //
-    constexpr static double psai_i = 0.1;                            //
-    constexpr static double sigma_u = 0.1;                           //
-    constexpr static double sigma_i = 0.1;                           //
-    constexpr static double psai_tm = 0.1;                           //
+    constexpr static double lambda_u = 0.1;                      //
+    constexpr static double lambda_i = 0.1;                      //
+    constexpr static double psai_u = 0.1;                        //
+    constexpr static double psai_i = 0.1;                        //
+    constexpr static double sigma_u = 0.1;                       //
+    constexpr static double sigma_i = 0.1;                       //
+    constexpr static double psai_tm = 0.1;                       //
                                                                  // 
-    constexpr static double alpha  = 5;                              // 
+    constexpr static double alpha  = 5;                          // 
     const static int max_words = 8000;                           //
-    constexpr static double gamma = 1.0;                             //
-    constexpr static double eta_bw = 0.001;                          //
-    constexpr static double eta_sw = 0.001;                          //
-    constexpr static double eta_aw = 0.001;                          //
-    constexpr static double eta_mw = 0.001;                          //
-    constexpr static double logit_c = 1;                             //
-    constexpr static double logit_b = 3;                             //
+    constexpr static double gamma = 1.0;                         //
+    constexpr static double eta_bw = 0.001;                      //
+    constexpr static double eta_sw = 0.001;                      //
+    constexpr static double eta_aw = 0.001;                      //
     const static int eta_scale = 10;                             //
+    constexpr static double eta_mw = 0.001;                      //
+    constexpr static double logit_c = 1;                         //
+    constexpr static double logit_b = 3;                         //
     const static int switch_num = 5;                             //
     const static int sentiment_num = 2;                          //
     ///////////////////////////////////////////////////////////////
@@ -94,6 +94,7 @@ public:
     int ** VW_a;
     int ** N_y4mw;
     int * N_y4m;
+    int nsample_space;
     double sum_eta_y2sw;
     double sum_eta_y3sw;
     double sum_eta_y4aw;
@@ -160,7 +161,7 @@ public:
         for (vector<Vote*>::iterator it = corp->VA_V->begin();
                 it != corp->VA_V->end(); it++)
             vali_votes.push_back(*it);
-       
+
         m_lbfgs = new CLBFGSCPP();
         if (restart_tag == true) {
             printf("Para initialization from restart.\n");
@@ -367,8 +368,9 @@ public:
 
     void gibbsInit() {
         int user=-1, item, voteidx, switchid, idx;
-
-        P = new double[switch_num*naspects*sentiment_num];
+        nsample_space = 1+sentiment_num+sentiment_num*naspects+naspects+1;
+       
+        P = new double[nsample_space];
         N_y = new int[switch_num];
         memset(N_y, 0, sizeof(int)*switch_num);
         N_y0w = new int[n_words];
@@ -466,10 +468,6 @@ public:
                     N_y2aw[a][*it1]++;
                     N_y2a[a]++;
                     VW_a[voteidx][idx] = a;
-                    if (adj_adv_verb_set->find((*it)->pos[idx]) != adj_adv_verb_set->end())
-                        sum_eta_y2sw += eta_sw*eta_scale;
-                    else
-                        sum_eta_y2sw += eta_sw;
                     VW_s[voteidx][idx] = s;
                     VC_y2sa[voteidx][s][a]++;
                 } else if (switchid == 3) {
@@ -477,18 +475,10 @@ public:
                     N_y3aw[a][*it1]++;
                     N_y3a[a]++;
                     VW_a[voteidx][idx] = a;
-                    if (adj_adv_verb_set->find((*it)->pos[idx]) != adj_adv_verb_set->end())
-                        sum_eta_y3sw += eta_sw*eta_scale;
-                    else
-                        sum_eta_y3sw += eta_sw;
                     VC_y3a[voteidx][a]++;
                 } else if (switchid == 4) {
                     N_y4mw[item][*it1]++;
                     N_y4m[item]++;
-                    if (adj_adv_verb_set->find((*it)->pos[idx]) != adj_adv_verb_set->end())
-                        sum_eta_y4aw += eta_sw;
-                    else
-                        sum_eta_y4aw += eta_sw*eta_scale;
                 } else {
                     printf("Invalid switchid.\n");
                     exit(1);
@@ -497,6 +487,7 @@ public:
             }
             voteidx++;
         }
+        checkSamplingResult();
     }
 
     void gibbsEm() {
@@ -520,7 +511,8 @@ public:
             }
             evalRmseError(train_rmse, valid_rmse, test_rmse);
             printf("Current iteration: %d, Train RMSE=%.6f, ", iter+1, train_rmse);
-            printf("Valid RMSE=%.6f, Test RMSE=%.6f;", valid_rmse, test_rmse);
+            printf("Valid RMSE=%.6f, Test RMSE=%.6f.\n", valid_rmse, test_rmse);
+            outputSentimentWords(10);
             cur_valid = valid_rmse;
             if (cur_valid < best_valid) {
                 best_valid = cur_valid;
@@ -546,7 +538,6 @@ public:
         double pred=0.0;
         int user, item, dim3todim1, voteidx;
         int yid, wid, sid, aid, posid, sampleid;
-        int nsample_space = 1+sentiment_num+sentiment_num*naspects+naspects+1;
 
         srandom(time(0));
         voteidx = 0;
@@ -571,6 +562,10 @@ public:
                     }
                 } else if (yid==1) {
                     VC_y1s[voteidx][sid]--;
+                    if (sid < 0 || wid < 0) {
+                        printf("%d, %d\n", sid, wid);
+                        exit(1);
+                    }
                     N_y1sw[sid][wid]--;
                     if (N_y1sw[sid][wid] < 0) {
                         printf("N_y1sw[%d][%d]<0\n", sid, wid);
@@ -583,6 +578,10 @@ public:
                     }
                 } else if (yid==2) {
                     N_y2aw[aid][wid]--;
+                    if (aid < 0 || wid < 0 || sid < 0) {
+                        printf("%d, %d, %d\n", aid, wid, sid);
+                        exit(1);
+                    }
                     if (N_y2aw[aid][wid] < 0) {
                         printf("N_y2aw[%d][%d]<0\n", aid, wid);
                         exit(1);
@@ -595,6 +594,10 @@ public:
                     VC_y2sa[voteidx][sid][aid]--;
                 } else if (yid==3) {
                     N_y3aw[aid][wid]--;
+                    if (aid < 0 || wid < 0) {
+                        printf("%d, %d\n", aid, wid);
+                        exit(1);
+                    }
                     if (N_y3aw[aid][wid] < 0) {
                         printf("N_y3aw[%d][%d]<0\n", aid, wid);
                         exit(1);
@@ -626,8 +629,8 @@ public:
                 }
 
                 //// Sampling
-                // 1-->background word generation
                 sampleid = 0;
+                // 1-->background word generation
                 P[sampleid] = getSamplingVal(0, -1, -1, wid, posid, user, item);
                 sampleid += 1;
 
@@ -656,8 +659,12 @@ public:
 
                 double sval = ((double)random()/RAND_MAX*P[nsample_space-1]);
                 for (sampleid=0; sampleid<nsample_space; sampleid++) {
-                    if (sval < P[sampleid])
+                    if (sval <= P[sampleid])
                         break;
+                }
+                if (sampleid == nsample_space) {
+                    printf("Sampling choice error.\n");
+                    exit(1);
                 }
                 mapDim1ToDim3(sampleid, yid, sid, aid);
                 VW_y[voteidx][i]=yid;
@@ -692,11 +699,52 @@ public:
             }
         }
         printf("\n");
+        checkSamplingResult();
+    }
+
+    void checkSamplingResult() {
+        int words_num=0;
+        for (int s=0; s<sentiment_num; s++) {
+            words_num = 0;
+            for (int w=0; w<n_words; w++)
+                words_num += N_y1sw[s][w];
+            if (words_num != N_y1s[s]) {
+                printf("Count mismatch in N_y1s[%d]: %d, %d\n", s, N_y1s[s], words_num);
+                exit(1);
+            }
+        }
+        for (int a=0; a<naspects; a++) {
+            words_num = 0;
+            for (int w=0; w<n_words; w++)
+                words_num += N_y2aw[a][w];
+            if (words_num != N_y2a[a]) {
+                printf("Count mismatch in N_y2a[%d]: %d, %d\n", a, N_y2a[a], words_num);
+                exit(1);
+            }
+        }
+        for (int a=0; a<naspects; a++) {
+            words_num = 0;
+            for (int w=0; w<n_words; w++)
+                words_num += N_y3aw[a][w];
+            if (words_num != N_y3a[a]) {
+                printf("Count mismatch in N_y3a[%d]: %d, %d\n", a, N_y3a[a], words_num);
+                exit(1);
+            }
+        }
+        for (int i=0; i<n_items; i++) {
+            words_num = 0;
+            for (int w=0; w<n_words; w++)
+                words_num += N_y4mw[i][w];
+            if (words_num != N_y4m[i]) {
+                printf("Count mismatch in N_y4m[%d]: %d, %d\n", i, N_y4m[i], words_num);
+                exit(1);
+            }
+        }
     }
 
     void gibbsMstep() {
         int user, item, voteidx;
-        double rating, *aspect_rating, res_rating, prob, aggregate_setiment;
+        double rating, *aspect_rating, res_rating, prob, aggregate_sentiment;
         double local_cache1, local_cache2, cache_res_rating;
 
         // LBFGS related variables
@@ -762,7 +810,7 @@ public:
             //   shown in orginal paper and the left part is regularization terms)
             // --> 1 <-- : total rating error from user behaviors
             rating = predRating(*it, true, true);
-            aggregate_setiment = predAggregateSentiment(user, item, true);
+            aggregate_sentiment = predAggregateSentiment(user, item, true);
             res_rating = rating - (*it)->value;
             cache_res_rating = 2*alpha*res_rating;
             f += alpha*pow(res_rating, 2);
@@ -791,17 +839,17 @@ public:
             // --> 2 <-- : total rating error from reviews
             local_cache1 = 0.0;
             for (int s=0; s<sentiment_num; s++) {
-                prob = calcLogitProb(sentiment_val[s], aggregate_setiment);
+                prob = calcLogitProb(sentiment_val[s], aggregate_sentiment);
                 local_cache1 += VC_y1s[voteidx][s]*(1-prob)*sentiment_val[s]*logit_c;
                 f-=VC_y1s[voteidx][s]*log(prob);
-            }
-            for (int k1=0; k1<ndim; k1++) {
-                gtheta_user[user][k1] -= local_cache1*cache_item_vec[k1];
-                gtheta_item[item][k1] -= local_cache1*cache_user_vec[k1];
             }
             gb_user[user] -= local_cache1; 
             gb_item[item] -= local_cache1;
             *gmu -= local_cache1;
+            for (int k1=0; k1<ndim; k1++) {
+                gtheta_user[user][k1] -= local_cache1*cache_item_vec[k1];
+                gtheta_item[item][k1] -= local_cache1*cache_user_vec[k1];
+            }
             for (int a=0; a<naspects; a++) {
                 local_cache2 = local_cache1*cache_topic_vec[a];
                 ggamma_user[user][a] -= local_cache2;
@@ -864,21 +912,17 @@ public:
 
         sval = N_y[y]+gamma;
         if (y==0) {
-            sval = sval*(N_y0w[wid]+eta_bw)/(N_y[0]+n_words*eta_bw);
+            if (adj_adv_verb_set->find(pos) != adj_adv_verb_set->end())
+                sval = sval*(N_y0w[wid]+eta_bw)/(N_y[0]+n_words*eta_bw);
+            else
+                sval = sval*(N_y0w[wid]+eta_bw*eta_scale)/(N_y[0]+n_words*eta_bw);
         } else if (y==1) {
             if (adj_adv_verb_set->find(pos) != adj_adv_verb_set->end())
                 sval *= (N_y1sw[s][wid]+eta_sw*eta_scale)/(N_y1s[s]+n_words*eta_sw);
             else 
                 sval *= (N_y1sw[s][wid]+eta_sw)/(N_y1s[s]+n_words*eta_sw);
             rating = predAggregateSentiment(user, item, true);
-            if (s == 0)
-                sval *= calcLogitProb(-1, rating);
-            else if (s == 1)
-                sval *= calcLogitProb(1, rating);
-            else {
-                printf("Invalid s: %d\n, s");
-                exit(1);
-            }
+            sval *= calcLogitProb(sentiment_val[s], rating);
         } else if (y==2) {
             if (adj_adv_verb_set->find(pos) != adj_adv_verb_set->end())
                 sval *= (N_y2aw[a][wid]+eta_sw*eta_scale)/(N_y2a[a]+n_words*eta_sw);
@@ -896,12 +940,15 @@ public:
             }
         } else if (y==3) {
             if (adj_adv_verb_set->find(pos) != adj_adv_verb_set->end())
-                sval *= (N_y3aw[a][wid]+eta_aw)/(N_y2a[a]+n_words*eta_aw);
+                sval *= (N_y3aw[a][wid]+eta_aw)/(N_y3a[a]+n_words*eta_aw);
             else
-                sval *= (N_y3aw[a][wid]+eta_aw*eta_scale)/(N_y2a[a]+n_words*eta_aw);
+                sval *= (N_y3aw[a][wid]+eta_aw*eta_scale)/(N_y3a[a]+n_words*eta_aw);
             sval *= aspect_dis[a];
         } else if (y==4) {
-            sval *= (N_y4mw[item][wid]+eta_mw)/(N_y4m[item]+n_words*eta_mw);
+            if (adj_adv_verb_set->find(pos) != adj_adv_verb_set->end())
+                sval *= (N_y4mw[item][wid]+eta_mw)/(N_y4m[item]+n_words*eta_mw);
+            else
+                sval *= (N_y4mw[item][wid]+eta_mw*eta_scale)/(N_y4m[item]+n_words*eta_mw);
         }
         if (sval < 0)
             return 0;
@@ -980,7 +1027,7 @@ public:
                     break;
                 for (int k1=0; k1<ndim; k1++)
                     for (int k2=0; k2<ndim; k2++)
-                        aspect_agg_mat[a][k1][k2] += aspect_dis[a1]*aspect_mat[a][k1][k2]-aspect_mat[a1][k1][k2];
+                        aspect_agg_mat[a][k1][k2] += aspect_dis[a1]*(aspect_mat[a][k1][k2]-aspect_mat[a1][k1][k2]);
             }
             for (int k1=0; k1<ndim; k1++)
                 for (int k2=0; k2<ndim; k2++)
@@ -999,7 +1046,7 @@ public:
     void calcOuterProductOfUserItem(int user, int item) {
         for (int k1=0; k1<ndim; k1++)
             for (int k2=0; k2<ndim; k2++)
-                cache_ui_mat[k1][k2] = theta_user[user][k1]*theta_user[user][k2];
+                cache_ui_mat[k1][k2] = theta_user[user][k1]*theta_item[item][k2];
     }
 
     double predAspectSentiment(int a, int user, int item) {
@@ -1095,6 +1142,7 @@ public:
         printf("||||||\n");
         delete results;
         
+        i=0;
         results = new vector<Cword>();
         for (int w=0; w<n_words; w++) {
             Cword cword;
