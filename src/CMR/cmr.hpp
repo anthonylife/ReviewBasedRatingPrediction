@@ -28,7 +28,7 @@ public:
     const static int ncluster_u=5;                              //
     const static int ncluster_i=5;                              //
     const static int nratings = 5;                               // 
-    const static int K=40;                                       //
+    const static int K=5;                                       //
     const static int max_words = 5000;                           //
                                                                  // 
     constexpr static double alpha=0.5/ncluster_u;                 //
@@ -47,14 +47,16 @@ public:
     ///////////////////////////////////////////////////////////////
    
     int ** N_uc;
+    int * sumN_u;
     int ** N_ic;
+    int * sumN_i;
     int ** N_ccr;
     int ** N_cck;
     int * sumN_cc;
     int ** N_kw;
     int * sumN_k;
-    int * UC_vote;
-    int * IC_vote;
+    int ** UC_vote;
+    int ** IC_vote;
     int ** WK_vote;
 
     vector<Vote*> train_votes;
@@ -98,8 +100,10 @@ public:
         for (vector<Vote*>::iterator it = corp->TR_V->begin(); 
                 it != corp->TR_V->end(); it++) {
             train_votes.push_back(*it);
-            train_votes_puser[(*it)->user].push_back(*it);
-            train_votes_pitem[(*it)->item].push_back(*it);
+            if ((int)(*it)->words.size() > 0) {
+                train_votes_puser[(*it)->user].push_back(*it);
+                train_votes_pitem[(*it)->item].push_back(*it);
+            }
         }
         for (vector<Vote*>::iterator it = corp->TE_V->begin();
                 it != corp->TE_V->end(); it++)
@@ -107,7 +111,7 @@ public:
         for (vector<Vote*>::iterator it = corp->VA_V->begin();
                 it != corp->VA_V->end(); it++)
             vali_votes.push_back(*it);
-        printf("Number of training votes: %d, vali votes: %d, test votes: %d", train_votes.size(), vali_votes.size(), test_votes.size());
+        printf("Number of training votes: %d, vali votes: %d, test votes: %d", (int)train_votes.size(), (int)vali_votes.size(), (int)test_votes.size());
 
         srandom(time(0));
         initialize();
@@ -147,9 +151,11 @@ public:
         for (int u=0; u<n_users; u++)
             delete[] N_uc[u];
         delete[] N_uc;
+        delete[] sumN_u;
         for (int i=0; i<n_items; i++)
             delete[] N_ic[i];
         delete[] N_ic;
+        delete[] sumN_i;
         for (int cc=0; cc<ncluster_u*ncluster_i; cc++) {
             delete[] N_ccr[cc];
             delete[] N_cck[cc];
@@ -161,12 +167,21 @@ public:
         for (int k=0; k<K; k++)
             delete[] N_kw[k];
         delete[] sumN_k;
-        delete[] UC_vote;
-        delete[] IC_vote;
         int ind = 0;
         for (vector<Vote*>::iterator it=train_votes.begin();
                 it!=train_votes.end(); it++)
+            delete[] UC_vote[ind++];
+        delete[] UC_vote;
+        ind = 0;
+        for (vector<Vote*>::iterator it=train_votes.begin();
+                it!=train_votes.end(); it++)
+            delete[] IC_vote[ind++];
+        delete[] IC_vote;
+        ind = 0;
+        for (vector<Vote*>::iterator it=train_votes.begin();
+                it!=train_votes.end(); it++)
             delete[] WK_vote[ind++];
+        delete[] WK_vote;
     }
 
     void initialize() {
@@ -198,11 +213,15 @@ public:
             N_uc[u] = new int[ncluster_u];
             memset(N_uc[u], 0, sizeof(int)*ncluster_u);
         }
+        sumN_u = new int[n_users];
+        memset(sumN_u, 0, sizeof(int)*n_users);
         N_ic = new int*[n_items];
         for (int i=0; i<n_items; i++) {
             N_ic[i] = new int[ncluster_i];
             memset(N_ic[i], 0, sizeof(int)*ncluster_i);
         }
+        sumN_i = new int[n_items];
+        memset(sumN_i, 0, sizeof(int)*n_items);
         N_ccr = new int*[ncluster_u*ncluster_i];
         N_cck = new int*[ncluster_u*ncluster_i];
         for (int cc=0; cc<ncluster_u*ncluster_i; cc++) {
@@ -220,16 +239,25 @@ public:
         }
         sumN_k = new int[K];
         memset(sumN_k, 0, sizeof(int)*K);
-        UC_vote = new int[(int)train_votes.size()];
-        memset(UC_vote, 0, sizeof(int)*(int)train_votes.size());
-        IC_vote = new int[(int)train_votes.size()];
-        memset(IC_vote, 0, sizeof(int)*(int)train_votes.size());
-        WK_vote = new int*[(int)train_votes.size()];
         int ind = 0;
+        UC_vote = new int*[(int)train_votes.size()];
+        for (vector<Vote*>::iterator it=train_votes.begin();
+                it!=train_votes.end(); it++) {
+            UC_vote[ind++] = new int[(int)(*it)->words.size()];
+        }
+        ind = 0;
+        IC_vote = new int*[(int)train_votes.size()];
+        for (vector<Vote*>::iterator it=train_votes.begin();
+                it!=train_votes.end(); it++) {
+            IC_vote[ind++] = new int[(int)(*it)->words.size()];
+        }
+        ind = 0;
+        WK_vote = new int*[(int)train_votes.size()];
         for (vector<Vote*>::iterator it=train_votes.begin();
                 it!=train_votes.end(); it++) {
             WK_vote[ind++] = new int[(int)(*it)->words.size()];
         }
+        srandom(time(0));
         ind = -1;
         for (vector<Vote*>::iterator it=train_votes.begin();
                 it!=train_votes.end(); it++) {
@@ -239,19 +267,21 @@ public:
             int rating = (int)(*it)->value;
             int user = (*it)->user;
             int item = (*it)->item;
-            int uc = (int)(((double)random()/RAND_MAX)*ncluster_u);
-            int ic = (int)(((double)random()/RAND_MAX)*ncluster_i);
-            int cc = uc*ncluster_i+ic;
-            N_uc[user][uc]++;
-            N_ic[item][ic]++;
-            N_ccr[cc][rating-1]++;
-            sumN_cc[cc]++;
-            UC_vote[ind] = uc;
-            IC_vote[ind] = ic;
             int ind1=0;
             for (vector<int>::iterator it1=(*it)->words.begin();
                     it1!=(*it)->words.end(); it1++) {
                 int k= (int)(((double)random()/RAND_MAX)*K);
+                int uc = (int)(((double)random()/RAND_MAX)*ncluster_u);
+                int ic = (int)(((double)random()/RAND_MAX)*ncluster_i);
+                int cc = uc*ncluster_i+ic;
+                N_uc[user][uc]++;
+                sumN_u[user]++;
+                N_ic[item][ic]++;
+                sumN_i[item]++;
+                N_ccr[cc][rating-1]++;
+                sumN_cc[cc]++;
+                UC_vote[ind][ind1] = uc;
+                IC_vote[ind][ind1] = ic;
                 WK_vote[ind][ind1] = k;
                 N_cck[cc][k]++;
                 N_kw[k][*it1]++;
@@ -264,10 +294,15 @@ public:
     void train() {
         int uc, ic, cc, k, user, item, rating, topic3dim;
         double sval, cur_train, cur_valid, cur_test, best_valid=1e5, best_rmse;
+        double tr_perp, va_perp, te_perp;
         double * P = new double[ncluster_u*ncluster_i*K];
         printf("Start training.\n");
         int ind, ind1;
 
+        updateModelPara();
+        checkProb();
+        evalPerp(tr_perp, va_perp, te_perp);
+        printf("Before training, train Perp=%.6f, vali Perp=%.6f, test Perp=%.6f!\n", tr_perp,  va_perp, te_perp);
         for (int iter=0; iter<niters_gibbs; iter++) {
         ind = -1;
         for (vector<Vote*>::iterator it=train_votes.begin();
@@ -287,17 +322,45 @@ public:
             ind1=0;
             for (vector<int>::iterator it1=(*it)->words.begin();
                     it1!=(*it)->words.end(); it1++) {
-                uc = UC_vote[ind];
-                ic = IC_vote[ind];
+                uc = UC_vote[ind][ind1];
+                ic = IC_vote[ind][ind1];
                 N_uc[user][uc]--;
+                if (N_uc[user][uc] < 0) {
+                    printf("Negative N_uc[%d][%d]: %d", user, uc, N_uc[user][uc]);
+                    utils::pause();
+                }
                 N_ic[item][ic]--;
+                if (N_ic[item][uc] < 0) {
+                    printf("Negative N_ic[%d][%d]: %d", item, uc, N_ic[item][uc]);
+                    utils::pause();
+                }
                 cc = uc*ncluster_i+ic;
                 N_ccr[cc][rating-1]--;
+                if (N_ccr[cc][rating-1] < 0) {
+                    printf("Negative N_ccr[%d][%d]: %d", cc, rating-1, N_ccr[cc][rating-1]);
+                    utils::pause();
+                }
                 sumN_cc[cc]--;
+                if (sumN_cc[cc] < 0) {
+                    printf("Negative sumN_cc[%d]: %d", cc, sumN_cc[cc]);
+                    utils::pause();
+                }
                 k = WK_vote[ind][ind1];
                 N_cck[cc][k]--; 
+                if (N_cck[cc][k] < 0) {
+                    printf("Negative N_cck[%d][%d]: %d", cc, k, N_cck[cc][k]);
+                    utils::pause();
+                }
                 N_kw[k][*it1]--;
+                if (N_kw[k][*it1] < 0) {
+                    printf("Negative N_kw[%d][%d]: %d", k, *it1, N_kw[k][*it1]);
+                    utils::pause();
+                }
                 sumN_k[k]--;
+                if (sumN_k[k] < 0) {
+                    printf("Negative sumN_k[%d]: %d", k, sumN_k[k]);
+                    utils::pause();
+                }
                 for (uc=0; uc<ncluster_u; uc++)
                     for (ic=0; ic<ncluster_i; ic++)
                         for (k=0; k<K; k++) {
@@ -324,8 +387,8 @@ public:
                 //printf("ind: %d, ind1: %d\n", ind, ind1);
                 //printf("uc: %d, ic: %d, k: %d\n", uc, ic, k);
                 //utils::pause();
-                UC_vote[ind] = uc;
-                IC_vote[ind] = ic;
+                UC_vote[ind][ind1] = uc;
+                IC_vote[ind][ind1] = ic;
                 N_uc[user][uc]++;
                 N_ic[item][ic]++;
                 cc = uc*ncluster_i+ic;
@@ -340,8 +403,13 @@ public:
             }
         }
         if ((iter+1) % 2 == 0) { 
+            printf("haha0\n");
             updateModelPara();
+            //checkProb();
             evalRmseError(cur_train, cur_valid, cur_test);
+            printf("haha1\n");
+            evalPerp(tr_perp, va_perp, te_perp);
+            printf("haha2\n");
             if (cur_valid < best_valid) {
                 best_valid = cur_valid;
                 best_rmse = cur_test;
@@ -358,6 +426,7 @@ public:
             printf("Current iteration: %d, Train RMSE=%.6f, ", iter+1, cur_train);
             printf("Valid RMSE=%.6f, Test RMSE=%.6f;", cur_valid, cur_test);
             printf("Best valid RMSE=%.6f, test RMSE=%.6f!\n", best_valid, best_rmse);
+            printf("Train Perp=%.6f, vali Perp=%.6f, test Perp=%.6f!\n", tr_perp,  va_perp, te_perp);
         }
         }
         printf("Finish training.\n");
@@ -399,10 +468,10 @@ public:
         double Calpha=ncluster_u*alpha, Cbeta=ncluster_i*beta, Reta=nratings*eta, Kkappa=K*kappa, Wgamma=n_words*gamma;
         for (int u=0; u<n_users; u++)
             for (int uc=0; uc<ncluster_u; uc++)
-                pai_uc[u][uc] = (alpha+N_uc[u][uc])/(Calpha+train_votes_puser[u].size());
+                pai_uc[u][uc] = (alpha+N_uc[u][uc])/(Calpha+sumN_u[u]);
         for (int i=0; i<n_items; i++)
             for (int ic=0; ic<ncluster_i; ic++)
-                pai_ic[i][ic] = (beta+N_ic[i][ic])/(Cbeta+train_votes_pitem[i].size());
+                pai_ic[i][ic] = (beta+N_ic[i][ic])/(Cbeta+sumN_i[i]);
         for (int uc=0; uc<ncluster_u; uc++)
             for (int ic=0; ic<ncluster_i; ic++) {
                 cc = uc*ncluster_i+ic;
@@ -414,6 +483,56 @@ public:
         for (int k=0; k<K; k++)
             for (int w=0; w<n_words; w++)
                 fai_kw[k][w] = (gamma+N_kw[k][w])/(Wgamma+sumN_k[k]);
+    }
+
+    void checkProb() {
+        int cc;
+        double sum = 0; 
+        for (int u=0; u<n_users; u++) {
+            sum = 0;
+            for (int uc=0; uc<ncluster_u; uc++)
+                sum += pai_uc[u][uc];
+            if (fabs(sum-1) > 1e-8) {
+                printf("Sum-pai_uc: %lf\n", sum);
+                utils::pause();
+            }
+        }
+        for (int i=0; i<n_items; i++) {
+            sum = 0;
+            for (int ic=0; ic<ncluster_i; ic++)
+                sum += pai_ic[i][ic];
+            if (fabs(sum-1) > 1e-8) {
+                printf("Sum-pai_ic: %lf\n", sum);
+                utils::pause();
+            }
+        }
+        for (int uc=0; uc<ncluster_u; uc++)
+            for (int ic=0; ic<ncluster_i; ic++) {
+                cc = uc*ncluster_i+ic;
+                sum=0;
+                for (int r=0; r<nratings; r++)
+                    sum += psai_ccr[cc][r];
+                if (fabs(sum-1) > 1e-8) {
+                    printf("Sum-psai_ccr: %lf\n", sum);
+                    utils::pause();
+                }
+                sum=0;
+                for (int k=0; k<K; k++)
+                    sum += theta_cck[cc][k];
+                if (fabs(sum-1) > 1e-8) {
+                    printf("Sum-theta_cck: %lf\n", sum);
+                    utils::pause();
+                }
+            }
+        for (int k=0; k<K; k++) {
+            sum = 0.0;
+            for (int w=0; w<n_words; w++)
+                sum += fai_kw[k][w];
+            if (fabs(sum-1) > 1e-8) {
+                printf("Sum-fai_kw: %lf\n", sum);
+                utils::pause();
+            }
+        }
     }
 
     double predRating(Vote * vote) {
@@ -431,6 +550,7 @@ public:
     }
 
     double predRating1(Vote * vote) {
+        int cc;
         int user = vote->user;
         int item = vote->item;
         double * rating_prob = new double[nratings];
@@ -449,6 +569,7 @@ public:
                 rating = r + 1.0;
                 max_ind = r;
             }
+        delete[] rating_prob;
         return rating;
     }
 
@@ -470,6 +591,58 @@ public:
         //cout << "Test: " << test << ", Size: " << test_votes.size() << endl;
         test = sqrt(test/test_votes.size());
     } 
+
+    void evalPerp(double& train, double& valid, double & test) {
+        int user, item, cc, word_cnt;
+        double word_prob;
+        train = 0.0, valid = 0.0, test = 0.0;
+
+        word_cnt = 0;
+        for (vector<Vote*>::iterator it = train_votes.begin();
+                it != train_votes.end(); it++) {
+            user = (*it)->user;
+            item = (*it)->item;
+            word_cnt += (*it)->words.size();
+            for (vector<int>::iterator it1=(*it)->words.begin();
+                    it1!=(*it)->words.end(); it1++) {
+                word_prob = 0.0;
+                for (int uc=0; uc<ncluster_u; uc++)
+                    for (int ic=0; ic<ncluster_i; ic++) {
+                        cc = uc*ncluster_i+ic;
+                        for (int k=0; k<K; k++)
+                            word_prob += pai_uc[user][uc]*pai_ic[item][ic]*theta_cck[cc][k]*fai_kw[k][*it1];
+                    }
+                //printf("Word_prob: %lf", word_prob);
+                //utils::pause();
+                train += log(word_prob);
+                if (std::isnan(train) || word_prob==0) {
+                    printf("Nan, word_prob:%lf\n", word_prob);
+                    utils::pause();
+                }
+            }
+        }
+        train = exp(-train/word_cnt);
+
+        word_cnt = 0;
+        for (vector<Vote*>::iterator it = test_votes.begin();
+                it != test_votes.end(); it++) {
+            user = (*it)->user;
+            item = (*it)->item;
+            word_cnt += (*it)->words.size();
+            for (vector<int>::iterator it1=(*it)->words.begin();
+                    it1!=(*it)->words.end(); it1++) {
+                word_prob = 0.0;
+                for (int uc=0; uc<ncluster_u; uc++)
+                    for (int ic=0; ic<ncluster_i; ic++) {
+                        cc = uc*ncluster_i+ic;
+                        for (int k=0; k<K; k++)
+                            word_prob += pai_uc[user][uc]*pai_ic[item][ic]*theta_cck[cc][k]*fai_kw[k][*it1];
+                    }
+                test += log(word_prob);
+            }
+        }
+        test = exp(-test/word_cnt);
+    }
    
     void submitPredictions(char* submission_path) {
         FILE* f = utils::fopen_(submission_path, "w");
